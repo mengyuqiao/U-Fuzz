@@ -30,8 +30,8 @@ occurs when this condition is violated.
 
 \textbf{II. Memory-state failures} occur when the query remains fixed, but
 memory use does not correctly follow a controlled change from $M$ to
-$M'$. A relevant update, deletion, or addition should be reflected when
-the agent later uses memory, while an unrelated change should not disturb
+$M'$. A relevant update or deletion should be reflected when the agent later
+uses memory, while an unrelated change should not disturb
 the information used for the same request. We write this requirement as
 \fbox{\(
 \mathcal{C}_M\!\left(U(q,M), U(q,M'); M,M'\right)

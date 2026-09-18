@@ -5,241 +5,383 @@
     \centering
     \includegraphics[width=\linewidth]{figures/ufuzz.pdf}
     \vspace{-10pt}
-    \caption{Overview of \system, which builds seeds and references from memory checkpoints, generates validated query and memory-state mutations, and executes each seed-mutant pair to detect memory-use failures. Retrieval coverage and divergence guide seed retention for later rounds, while failure labels are kept outside the fuzzing search. As in typical fuzzing research, fault mitigation is treated as an independent topic and is beyond the scope of fuzzing research.}
+    \caption{Overview of \system. A frozen structural index supplies certified
+    mutation opportunities and stable canonical regions, while an isolated
+    reference vault supplies evaluator-only answers and evidence. Each valid
+    mutant changes exactly one input. Retrieval coverage and divergence guide
+    search without access to failure labels or the offline region universe.}
     \label{fig:method}
     \vspace{-10pt}
 \end{figure}
 
 We develop \system, a fuzzing framework for discovering the memory-use
-failures defined in \S\ref{sec:problem}. \system first constructs test seeds
-from memory checkpoints collected during normal agent tasks
-(\S\ref{subsec:seed-init}). It then generates and validates query or
-memory-state mutations under an explicit coverage requirement
-(\S\ref{subsec:mutation}). Finally, it executes each valid parent--mutant
-pair, checks whether the expected memory-use relation is violated, and
-retains useful mutants for later fuzzing rounds
-(\S\ref{subsec:execution}).
+failures defined in \S\ref{sec:problem}. \system constructs seeds from memory
+checkpoints and builds a frozen structural description of each checkpoint
+(\S\ref{subsec:seed-init}). It then enumerates applicable mutation
+obligations, generates and validates query or memory-state mutants
+(\S\ref{subsec:mutation}), and executes valid mutants under a fixed probe
+budget (\S\ref{subsec:execution}). Search uses only observable retrieval
+behavior and non-oracle structural information. Evaluation references and
+failure verdicts remain outside the search loop.
 
-
-\subsection{Seed Initialization}
+\subsection{Seed and Checkpoint Initialization}
 \label{subsec:seed-init}
 
-\system starts from checkpoints taken after an agent has already accumulated
-memory through normal interactions. Let \(H_{1:t}=\langle h_1,\ldots,h_t\rangle\)
-denote the interaction history up to time \(t\), and let \(M_t\) denote the
-memory state after these interactions. The history \(H_{1:t}\) is kept as provenance for \(M_t\). If the memory
-system allows its state to be copied, \system creates isolated copies of
-\(M_t\) and fuzzes those copies. If the state is hidden or cannot be copied,
-\system recreates the checkpoint in a separate session by replaying
-\(H_{1:t}\). Thus, fuzzing starts from a memory state created by normal
-agent use, while the original task and its memory remain unchanged.
+Let \(H_{1:t}=\langle h_1,\ldots,h_t\rangle\) denote the interaction history
+up to time \(t\), and let \(M_t\) denote the resulting memory state. The
+history and its stable benchmark source identifiers are retained as provenance
+for \(M_t\). If a backend permits exact state copies, \system creates isolated
+copies. Otherwise, it recreates a candidate checkpoint in a separate session
+by replaying a frozen initialization artifact derived from \(H_{1:t}\);
+equivalence is checked before paired fuzzing as described below. Thus, fuzzing
+does not modify the original task state.
 
+A seed is \(x=(M_t,q)\), where \(q\) is a query that may use information in
+\(M_t\). Each original checkpoint \(M_i\) has a frozen Checkpoint Structural
+Index
+\[
+\mathcal{I}(M_i)=(\mathcal{F}_i,\mathcal{Q}_i,\mathcal{P}_i,\mathcal{Z}_i),
+\]
+where \(\mathcal{F}_i\) contains certified canonical facts,
+\(\mathcal{Q}_i\) contains structured query descriptions,
+\(\mathcal{P}_i\) is the stable benchmark provenance registry, and
+\(\mathcal{Z}_i\) contains structural certificates used for applicability and
+validation. A canonical fact has the form
+\[
+f=(e,r,v,\tau,p),
+\]
+where \(e\), \(r\), \(v\), and \(\tau\) denote an entity, relation, value, and
+temporal scope, and \(p\) is a stable benchmark source identifier. Backend
+memory identifiers are adapter-local metadata rather than canonical fact
+identities.
 
-We define a seed (i.e., a test case) as \(x=(M_t,q)\), where \(q\)
-is a query that may use information stored in \(M_t\). Multiple checkpoints
-can be taken from the same task so that fuzzing covers different stages of
-memory growth. Besides, each seed also has a reference for evaluation:
-\(G(x)=(a,E^{+},E^{-})\). Here, \(a\) is the expected answer,
-\(E^{+}\) contains the evidence that validly supports \(a\), and
-\(E^{-}\) contains evidence from memory that should not support the current answer,
-such as an outdated or irrelevant fact. We use \(a=\bot\) when the memory
-does not contain information that supports an answer to \(q\). The
-references come from benchmark answers and interaction provenance when
-available. A seed without a reliable reference may still be used to find
-new behavior, but it is not counted as a confirmed failure.
+The index is partial but certified. Fields may come from benchmark structure,
+deterministic or rule-based extraction, or LLM-assisted extraction, but an LLM
+judgment alone cannot certify a field. Every field used for applicability must
+be checked independently of mutant execution and traceable to stable
+provenance. Information that cannot be certified remains unstructured; the
+corresponding structured mutation opportunities are inapplicable.
 
-Diverse but limited number of query cases will be collected as an initial seed corpus, \(\mathcal{S}_0=\{x\}\). Note that the reference set is separated from the seed corpus since the seed is used to construct valid tests and the reference is used to judge their results after execution. Failure labels obtained from \(G(x)\) are never used to choose the next seed or allocate additional probes.
+For a structured query, we use
+\[
+\operatorname{QI}(q)=(e,s_e,r,s_r,\tau,c,\alpha),
+\]
+where \(s_e\) and \(s_r\) are the entity and relation spans, \(c\) contains
+answer-affecting constraints, and \(\alpha\) is checkpoint-relative
+answerability. This description contains no gold answer.
 
+Separately, an evaluator-only ReferenceVault stores
+\[
+G(x)=(a,E^{+},E^{-}),
+\]
+where \(a\) is the expected answer, \(E^{+}\) is valid supporting evidence,
+and \(E^{-}\) is evidence that must not support the current answer. We use
+\(a=\bot\) for a checkpoint-relative unsupported query. Gold answers,
+\(E^{+}\), \(E^{-}\), correctness annotations, oracle predicates, and failure
+verdicts are never exposed to mutation selection, seed retention, scheduling,
+or search-value computation. The structural index is non-oracle information;
+the scheduler normally receives a frozen obligation projection produced from
+it rather than enumerating the full index.
+
+\paragraph{Shared initialization.}
+For a fixed checkpoint \(M_i\), backend \(b\), and repetition seed \(s\), the
+backend checkpoint is constructed once. Random Mutation, Unguided LLM
+Mutation, and \system preferably start from exact clones of that state. If
+cloning is unavailable, they replay the same frozen initialization artifact
+with all controllable randomness, model versions, prompts, decoding settings, and
+ingestion configuration fixed. Because identical replay input need not produce
+identical backend state, \system performs an initialization-equivalence check
+and records a stable state identity, fingerprint, or canonical state
+projection before method-specific fuzzing. The exact fingerprinting procedure
+is deferred to backend capability testing. A condition whose initialization
+equivalence cannot be established is recorded as an initialization or
+capability failure and excluded from the paired RQ1 comparison until resolved.
+After equivalence is established, the original queries and parent observations
+produce shared initial coverage \(C_0^{(i,b,s)}\), without a method index.
 
 \subsection{Mutation}
 \label{subsec:mutation}
 
-Given a seed \(x=(M,q)\), \system changes one input to memory use at a time.
-A \textbf{query mutation} produces \(x'=(M,q')\), while a \textbf{memory-state mutation}
-produces \(x'=(M',q)\). Each mutation operator \(o\) defines three parts:
-an applicability condition \(\mathrm{pre}_o\), a transformation that
-constructs \(x'\), and an expected relation \(\mathcal{C}_o\) between the
-parent and mutant executions. Here, \(\mathcal{C}_o\) is a concrete
-instance of the query-related or memory-state requirement defined in
-\S\ref{sec:problem}. Changing only one input in each parent-mutant pair
-will keep the source of an observed difference clear. A retained mutant can
-become a seed in a later round, so different changes may accumulate across
-rounds.
+Given a seed \(x=(M,q)\), \system changes one input at a time. A query mutation
+produces \(x'=(M,q')\), whereas a memory-state mutation produces
+\(x'=(M',q)\). An operator \(o\) defines a structural applicability condition,
+a transformation, a pre-execution validator, and an evaluator-side relation
+\(\mathcal{C}_o\). Retained mutants may become seeds in later rounds, but every
+individual parent--mutant pair still changes exactly one input.
 
+\paragraph{Query mutations.}
+A query mutation keeps \(M\) fixed. We use three classes. A
+\emph{meaning-preserving} mutation preserves the requested entity, relation,
+temporal scope, answerability, and other answer-affecting constraints. Its
+operators paraphrase, shorten removable context, add nonrestrictive context,
+or change syntactic form. A \emph{target-changing} mutation changes exactly
+one designated primary slot in \(\operatorname{QI}(q)\), chosen from entity,
+relation, or temporal scope, while preserving the remaining slots and
+constraints. The replacement must have provenance-backed canonical support
+for the unchanged request structure. An \emph{unsupported} mutation uses a
+structurally well-formed replacement for which support is absent from the
+current checkpoint.
 
-\textbf{I. Query mutation:}
-A query mutation keeps \(M\) fixed and changes \(q\). \system first chooses
-the relation that should hold between \(q\) and \(q'\), then generates a
-query that satisfies that relation. We use three classes of operations. \textbf{(I-1) Meaning-preserving mutation:}
-The mutant keeps the requested entity, attribute, time scope, answerability,
-and expected answer unchanged, so \(a'=a\). Operators include paraphrasing,
-shortening removable context, adding nonrestrictive context, and changing
-the syntactic form of the query. These mutations test whether equivalent
-queries continue to use the same relevant memory. \textbf{(I-2) Target-changing mutation.}
-The mutant changes one requested target while preserving the rest of the
-query. If \(z\) is a replaceable entity, attribute, or time scope and
-\(z'\) is another target with known evidence in \(M\), then
-\(q'=q[z\leftarrow z']\). The provenance of \(M\) supplies the new
-reference \(G(x')\). This mutation lets \system test information that exists
-in memory but is not queried by the original seed. \textbf{(I-3) Unsupported mutation.}
-The mutant replaces the requested target with \(z_{\emptyset}\), for which
-the checkpoint has no supporting evidence. The expected answer is therefore
-\(a'=\bot\). The absence of support is established from the checkpoint
-provenance before execution; a failed retrieval or incorrect response is
-not used to decide that a query is unsupported.
+Unsupportedness requires a checkpoint-relative certificate
+\(operatorname{Absent}(z,r,\tau,M)=1\), or the corresponding form without
+\(\tau\). The verifier must inspect the full checkpoint provenance relevant to
+the entity, relation, and scope; absence from a partial extracted fact table is
+insufficient. Deterministic matching, structured lookup, and LLM-assisted
+analysis may contribute, but an LLM assertion alone is insufficient. Failed
+retrieval and incorrect response behavior are never used to establish
+unsupportedness.
 
+\paragraph{Memory-state mutations.}
+A memory-state mutation keeps \(q\) fixed and applies a controlled operation
+\(\delta\) to an isolated state, producing \(M'=\delta(M)\). \system uses the
+backend's native memory operation or interaction semantics and validates the
+observable transition before executing the mutant query.
 
+We use three operations. An \emph{update} introduces a later, type-compatible
+value for an existing entity--relation pair and remains within that pair's
+canonical region. A \emph{deletion} removes or deactivates an existing fact.
+It is applicable only if a public or native backend operation faithfully
+realizes the designated change without modifying other relevant information.
+For Graphiti, episode deletion is applicable only when deleting the episode
+satisfies this condition; low-level edge deletion is not used to emulate it.
+An \emph{unrelated change} modifies the value or state of an already indexed
+canonical region that is structurally unrelated to
+\(\operatorname{QI}(q)\). It cannot introduce a new canonical region.
 
-\textbf{II. Memory-state mutation:}
-A memory-state mutation keeps \(q\) fixed and applies a controlled memory
-operation \(\delta\) to an isolated copy of \(M\), producing
-\(M'=\delta(M)\). When the system provides memory operations, \system uses
-those operations directly. If the memory can only be changed through
-interaction, \system appends the required interaction to the history that
-created \(M\) and builds \(M'\) in a separate session. 
+The ReferenceVault constructs the corresponding \(G(x')\) separately for
+offline evaluation. Mutation construction, validation, and scheduling do not
+receive that reference.
 
-Specifically, we consider three operations. \textbf{(II-1)} An \textbf{update} introduces a later value for an existing
-entity-attribute pair. \textbf{(II-2)} A \textbf{deletion} removes an existing
-fact. \textbf{(II-3)} An \textbf{unrelated change} adds or changes information
-that is not related to the query. The last operation serves as a control:
-the memory state changes, but the information needed by \(q\) should remain
-unchanged. Each operation also determines \(G(x')\). For an update from
-\(v_{\mathrm{old}}\) to \(v_{\mathrm{new}}\), the expected answer becomes
-\(v_{\mathrm{new}}\), while evidence for \(v_{\mathrm{old}}\) is placed in
-\(E^{-}\). After deletion, the deleted evidence is placed in \(E^{-}\);
-if no valid evidence remains, then \(a'=\bot\). A relevant addition extends
-\(E^{+}\) when the new fact should support the query. An unrelated change
-keeps \(G(x')=G(x)\). Thus, the expected effect of a memory mutation is
-fixed before \(M'\) is tested.
-
-Due to space constraints, we defer the implementation details and subsequent validation of mutated results into Appendix \ref{app:tech}.
-
-\textbf{Mutation coverage:}
-Since the space of natural-language queries is unbounded, \system defines
-coverage over the finite mutation opportunities available from the current
-seed corpus. At the beginning of round \(r\), \system fixes the seed corpus
-\(\mathcal{S}_r\). Each mutation obligation \(\omega=(x,o,t)\) pairs a
-seed \(x\), an applicable operator \(o\), and one valid target \(t\).
-For query mutations, \(t\) identifies a query element or another fact that
-can be queried; for memory-state mutations, it identifies the fact or
-relation to be changed. Let \(\mathcal{T}_o(x)\) denote the valid targets
-for \(o\). We define
+\paragraph{Mutation obligations and applicability.}
+At the beginning of round \(r\), \system freezes the seed corpus
+\(\mathcal{S}_r\). A mutation obligation
+\(\omega=(x,o,t)\) pairs a seed, an operator, and one concrete structurally
+certified target. For backend \(b\), let
+\[
+\mathcal{T}_{o,b}(x)=
+\left\{t:\operatorname{pre}^{\mathrm{struct}}_o(x,t)=1
+\land \operatorname{faithful}_b(x,o,t)=1\right\}.
+\]
+The applicable obligation set is
 \begin{equation}
-\Omega_r =
-\left\{
-(x,o,t)
-\;\middle|\;
-x\in\mathcal{S}_r,\;
-t\in\mathcal{T}_o(x),\;
-\mathrm{pre}_o(x,t)=1
-\right\}\quad \mathrm{and}\quad
-\mathrm{Cov}_{\mathrm{mut}}^{(r)} =
-\frac{|\Omega_r^{\mathrm{exec}}|}{|\Omega_r|}
+\Omega_{r,b}=
+\left\{(x,o,t)\mid x\in\mathcal{S}_r,
+t\in\mathcal{T}_{o,b}(x)\right\}.
+\label{eq:mutation-obligations}
+\end{equation}
+It is generated from the frozen structural index rather than manually
+pre-written and remains fixed within the round. All compared methods use the
+same backend-specific applicability mask.
+
+An opportunity is \textsc{inapplicable} when the operator and target cannot
+be used faithfully for the seed and backend. It is excluded from
+\(\Omega_{r,b}\), is not generated, and does not enter the applicable
+denominator. A candidate is \textsc{invalid} when its obligation was
+applicable but the generated result fails validation. Its obligation remains
+uncovered and may be retried under a fixed generation-attempt cap. The cap is
+selected after the pilot and frozen before full evaluation.
+
+Let \(\Omega_{r,b}^{\mathrm{exec}}\) contain obligations that have produced at
+least one valid executed mutant. Diagnostic obligation coverage is
+\begin{equation}
+\mathrm{Cov}_{\mathrm{mut}}^{(r,b)}=
+\frac{|\Omega_{r,b}^{\mathrm{exec}}|}{|\Omega_{r,b}|}.
 \label{eq:mutation-coverage}
 \end{equation}
-where \(\Omega_r^{\mathrm{exec}}\) contains the obligations that have
-produced at least one valid executed mutant.
+Invalid candidates do not cover an obligation.
 
-\system gives every uncovered obligation one generation attempt before
-allocating additional probes to covered obligations. Thus, for a fixed
-\(\Omega_r\), if every obligation admits a valid mutant and the round budget
-is sufficient to execute one mutant for each obligation, then
-\(\mathrm{Cov}_{\mathrm{mut}}^{(r)}=1\). This guarantee applies to the
-operators and targets represented in \(\Omega_r\), not to all possible
-natural-language queries. The obligation set remains fixed within a round;
-retained mutants are added to \(\mathcal{S}_{r+1}\), where they may create
-new obligations. Any remaining budget is then used to generate additional
-variants from covered obligations.
-
-
-% \textbf{Validation:}
-% Every generated mutant is validated before execution using information that
-% is independent of the test outcome. \system checks whether the intended
-% query relation or memory operation has actually been preserved, using the
-% query structure, checkpoint provenance, and memory-operation results
-% available from the tested system. An LLM may propose a mutant, but its
-% judgment alone is never sufficient to accept one. Invalid mutants are
-% discarded, and their mutation obligations remain uncovered. Detailed
-% validation rules are given in Appendix~\ref{app:mutation-validation}.
-
+\paragraph{Validation.}
+Every candidate is validated before execution using its QueryIntent,
+structural certificates, stable provenance, and, for memory mutations,
+observable operation or state information. Validation never uses the mutant
+retrieval, mutant response, ReferenceVault, or failure oracle. An LLM may
+propose a rewrite or contribute a rejection check, but its judgment alone
+cannot accept a candidate. Detailed rules appear in
+Appendix~\ref{app:mutation-validation}.
 
 \subsection{Execution and Fuzzing}
 \label{subsec:execution}
 
-For each pair \((x,x')\) after validation of mutants, \system executes the two
-tests in isolated memory states. Let \(U(x)\) denote the observed memory-use
-behavior of \(x\). If retrieval is visible, we record
-\(U(x)=(R_k(x),y(x))\), where \(R_k(x)=[m_1,\ldots,m_k]\) is the ranked
-top-\(k\) retrieved memory and \(y(x)\) is the final response. If retrieval
-is hidden (e.g., on API-based LLMs), we observe only \(y(x)\).
+For a seed \(x\), let \(U(x)=(R_k(x),y(x))\) denote the observed ranked
+retrieval and final response. Every retained seed stores the observation from
+its first valid execution together with its exact state and query identity.
+For initial seeds, these observations are produced during shared campaign
+initialization. For a normal parent--mutant evaluation, \system reuses the
+cached \(U(x)\) and executes only \(U(x')\).
 
+A cached parent observation may be reused only when the exact state and query
+identity are proven identical. If identity cannot be proven, reconstruction
+or a parent execution is logged as overhead rather than silently reused or
+silently charged as a mutant probe. The same reconstruction and accounting
+protocol is used by all methods.
 
-\textbf{Failure detection:}
-Recall that each test \(x\) has reference
-\(G(x)=(a,E^{+},E^{-})\), where \(a\) is the expected answer,
-\(E^{+}\) contains valid supporting evidence, and \(E^{-}\) contains
-evidence that should not support the answer. When retrieval is visible,
-\system matches entries in \(R_k(x)\) with \(E^{+}\) and \(E^{-}\) using
-memory identifiers or provenance. We use
-\(r^{+}(x)=\min_{m\in E^{+}}\mathrm{rank}(m,R_k(x))\) and define
-\(r^{-}(x)\) in the same way; a missing item has rank \(\infty\).
-We also use \(\mathrm{Ans}(y(x),a)\) to check whether the response gives
-the expected answer, or correctly avoids an answer when \(a=\bot\).
+One campaign is the product of one original checkpoint \(M_i\), one backend
+\(b\), one method \(h\), and one repetition seed \(s\). Its budget \(B\) counts
+valid new mutant executions only. Shared initialization, invalid generation,
+inapplicable opportunities, reconstruction, and separately required parent
+executions do not consume \(B\); their costs are logged separately. Thus, a
+fixed method/backend/repetition condition over \(N\) checkpoints performs
+\(N B\) valid new mutant executions.
 
-For a mutant produced by operator \(o\), the required relation
-\(\mathcal{C}_o\) is fixed by the mutation type and its references. A
-memory-use failure is recorded when this relation is violated:
+\paragraph{Failure detection.}
+After execution, the evaluator may use \(G(x)\), \(G(x')\), retrieval
+provenance, and responses to determine whether the required relation is
+violated:
 \begin{equation}
-F_o(x,x') =
+F_o(x,x')=
 \mathbf{1}\!\left[
-\neg\mathcal{C}_o
-\left(
-U(x),U(x');
-G(x),G(x')
-\right)
-\right]
+\neg\mathcal{C}_o\bigl(U(x),U(x');G(x),G(x')\bigr)
+\right].
 \label{eq:failure-detection}
 \end{equation}
-where \(F_o(x,x')=1\) denotes a confirmed memory-use failure and
-\(F_o(x,x')=0\) means that the required relation is satisfied. The concrete condition represented by \(\mathcal{C}_o\) depends on the
-mutation. For a meaning-preserving query mutation, \(F_o=1\) when the two
-equivalent queries no longer receive consistent support or produce
-inconsistent answers. For a target-changing mutation, \(F_o=1\) when the
-mutant does not follow the reference of the new target. For an unsupported
-query, \(F_o=1\) when the system produces a factual answer from memory even
-though \(G(x')\) specifies \(a'=\bot\). For a memory-state mutation,
-\(F_o=1\) when the observed behavior does not follow the known state change:
-for example, an old value remains preferred after an update, deleted
-evidence is still used, or an unrelated change alters the result for the
-fixed query.
+This evaluator runs outside fuzzing search. Its verdict cannot affect seed
+retention, scheduling, retries, or search values. The executable definitions
+of \(\mathcal{C}_o\) and answer matching, and the rule for deduplicating
+distinct failures in \(\mathrm{Fail}@B\), remain to be specified before the
+full evaluation.
 
-When retrieval is visible, \system can also report where the failure is
-observed. Missing valid evidence, or a stale or deleted item ranked ahead of
-valid evidence, indicates a failure in memory selection. If valid evidence
-is retrieved but \(y(x)\) does not match \(a\), the failure occurs after
-selection when the agent uses that memory. When retrieval is hidden,
-\system reports only the end-to-end memory-use failure.
+\paragraph{Canonical regions.}
+For a canonical fact with certified entity and relation, define
+\[
+\kappa(f)=(\texttt{entity-relation},\operatorname{norm}(e),
+\operatorname{norm}(r)).
+\]
+For source unit \(p\), let \(K_i(p)\) contain the certified semantic keys of
+facts whose provenance includes \(p\), and define
+\begin{equation}
+\operatorname{RegionsForSource}_i(p)=
+\begin{cases}
+K_i(p), & K_i(p)\neq\varnothing,\\
+\{(\texttt{source},p)\}, & K_i(p)=\varnothing.
+\end{cases}
+\label{eq:source-regions}
+\end{equation}
+Thus, a source contributes a fallback region only when it yields no certified
+entity--relation region. Residual unstructured text does not create a second
+region for a source that already has a semantic key.
 
+For original checkpoint \(M_i\), the frozen campaign universe is
+\begin{equation}
+U_i:=U(M_i)=
+\bigcup_{p\in\mathcal{P}_i}\operatorname{RegionsForSource}_i(p).
+\label{eq:region-universe}
+\end{equation}
+Descendant states do not define new universes. Update changes state within an
+existing region, deletion may deactivate content while its region remains in
+\(U_i\), and an unrelated change modifies another existing region. No valid
+memory-state mutation creates a region outside \(U_i\).
 
-\textbf{Seed retention and iteration:}
-Failure detection does not affect the fuzzing search. \system retains
-mutants using only results observed by fuzzing. For retrieval-visible
-systems, it measures retrieval change with
-\(R_{\mathrm{div}}(x,x')=1-\mathrm{RBO}(R_k(x),R_k(x'))\) for
-meaning-preserving mutations and tracks newly reached memory targets through
-\(\mathrm{Reg}(x')=\{\rho(m)\mid m\in R_k(x')\}\), where \(\rho(m)\)
-maps an entry to its entity-attribute pair or entry identifier. If
-\(\mathcal{V}_r\) contains the targets already reached in round \(r\), the
-coverage gain is
-\(R_{\mathrm{cov}}(x')
-=|\mathrm{Reg}(x')\setminus\mathcal{V}_r|/
-\max(1,|\mathrm{Reg}(x')|)\).
-\system also records whether the mutant introduces a new retrieval pattern,
-such as a new top-ranked item or retrieved set. A mutant is retained when it
-reaches a new memory target or produces a new retrieval pattern; retrieval
-divergence is used to prioritize retained meaning-preserving mutants. For
-systems with hidden retrieval, retention uses changes in the final response.
-At the end of round \(r\), retained mutants are added to
-\(\mathcal{S}_{r+1}\), where they may create new mutation obligations for
-the next round. Confirmed failures are stored only for evaluation and
-reporting.
+For a retrieved backend entry \(m\), the adapter first constructs a certified
+fact-level mapping
+\[
+\operatorname{FactMap}_{b,i}(m)=
+\{f:m\text{ can reliably be shown to represent }f\},
+\]
+and defines the semantic region set
+\[
+R^{\mathrm{sem}}_{b,i}(m)=
+\{\kappa(f):f\in\operatorname{FactMap}_{b,i}(m)\}.
+\]
+The separate conservative fallback set is
+\[
+R^{\mathrm{fallback}}_{b,i}(m)=
+\{(\texttt{source},p):m\text{ has reliable provenance to }p
+\land K_i(p)=\varnothing\}.
+\]
+We then define
+\[
+\rho_{b,i}(m)=R^{\mathrm{sem}}_{b,i}(m)\cup
+R^{\mathrm{fallback}}_{b,i}(m)\subseteq U_i.
+\]
+When a source has no certified semantic key, reliable source provenance may
+map the entry to its source fallback. When it has exactly one semantic key,
+reliable source provenance suffices for that key. When it has several keys,
+the entry maps only to facts that its content and provenance reliably
+identify. An entry that cannot be disambiguated is marked ambiguous or
+unmapped for coverage rather than assigned every key of its source. A
+summarized entry may still map to several regions when it reliably represents
+several certified facts. Mutation-generated values inherit their designated
+target's key. Thus, coverage counts regions represented in the retrieved
+entry, not every region present in its source unit. For ranked retrieval
+\(R_k\), define
+\[
+\operatorname{Regions}_i(R_k)=
+\bigcup_{m\in R_k}\rho_{b,i}(m).
+\]
+
+\paragraph{Retrieval-mapping quality.}
+Because ambiguous and unmapped entries are conservatively excluded from
+region coverage, we report
+\[
+\operatorname{MappingRate}=
+\frac{|\{m:\rho_{b,i}(m)\neq\varnothing\}|}
+{|\{m:m\text{ is a retrieved entry considered}\}|}.
+\]
+We also report mapped, ambiguous, and unmapped entry counts by
+backend/benchmark condition and optionally by method as a sanity check. This
+diagnostic does not guide scheduling, retention, or mutation selection; it
+does not enter either part of the RegionCov fraction; and it is not a primary
+RQ1 effectiveness metric.
+
+\paragraph{Online search feedback.}
+Let \(C_{t-1}^{\mathrm{online}}\) contain only regions observed during shared
+initialization and earlier valid probes in the campaign. For a probe executed
+on its actual state \(M_{i,t}\), let
+\[
+R_t=\operatorname{Regions}_i(R_k(q_t,M_{i,t})).
+\]
+Online coverage gain is
+\begin{equation}
+R_{\mathrm{cov},t}=
+\frac{|R_t\setminus C_{t-1}^{\mathrm{online}}|}
+{\max(1,|R_t|)},
+\qquad
+C_t^{\mathrm{online}}=C_{t-1}^{\mathrm{online}}\cup R_t.
+\label{eq:online-region-gain}
+\end{equation}
+The scheduler may also use retrieval-pattern novelty and, for
+meaning-preserving mutations, ranked retrieval divergence. It never receives
+the complete \(U_i\), its denominator, unseen-region targets, or evaluator
+information.
+
+\paragraph{Offline region coverage.}
+Let \(\mathcal{S}_0^{(i)}\) be the original benchmark query set for \(M_i\).
+For backend \(b\) and repetition seed \(s\), shared initial coverage is
+\begin{equation}
+C_0^{(i,b,s)}=
+\bigcup_{q\in\mathcal{S}_0^{(i)}}
+\operatorname{Regions}_i(R_k(q,M_i)).
+\label{eq:initial-region-coverage}
+\end{equation}
+These initialization executions do not consume \(B\). For method \(h\), let
+\(x_j=(M_{i,j},q_j)\), \(1\leq j\leq B\), be its valid new mutant executions
+in this checkpoint-level campaign. Then
+\begin{equation}
+C_B^{(i,b,h,s)}=C_0^{(i,b,s)}\cup
+\bigcup_{j=1}^{B}
+\operatorname{Regions}_i(R_k(q_j,M_{i,j})).
+\label{eq:campaign-regions}
+\end{equation}
+Because all mappings are anchored, \(C_B^{(i,b,h,s)}\subseteq U_i\). We
+define
+\begin{equation}
+\operatorname{RegionCov}_{i,b,h,s}@B=
+\frac{|C_B^{(i,b,h,s)}|}{|U_i|},
+\qquad
+\Delta\operatorname{RegionCov}_{i,b,h,s}@B=
+\frac{|C_B^{(i,b,h,s)}|-|C_0^{(i,b,s)}|}{|U_i|}.
+\label{eq:region-coverage}
+\end{equation}
+For fixed \(b,h,s\), primary aggregation across \(N\) checkpoints is the
+macro-average
+\begin{equation}
+\operatorname{RegionCov}_{b,h,s}@B=
+\frac{1}{N}\sum_{i=1}^{N}\operatorname{RegionCov}_{i,b,h,s}@B,
+\label{eq:macro-region-coverage}
+\end{equation}
+with the analogous definition for
+\(\Delta\operatorname{RegionCov}@B\). A pooled result may be reported only as
+a secondary diagnostic. The numerical budget, retrieval depth, retry cap,
+repetition count, extraction model and version, normalization algorithm, and
+manual-audit sample size are selected after the pilot and frozen before full
+evaluation.

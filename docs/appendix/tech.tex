@@ -1,264 +1,390 @@
 \section{Technical Implementation Details}
 \label{app:tech}
 
+\subsection{Checkpoint Structural Index}
+\label{app:structural-index}
+
+Before fuzzing a checkpoint \(M_i\), \system builds and freezes
+\[
+\mathcal{I}(M_i)=(\mathcal{F}_i,\mathcal{Q}_i,
+\mathcal{P}_i,\mathcal{Z}_i).
+\]
+The provenance registry \(\mathcal{P}_i\) contains every stable benchmark
+source unit used to construct the checkpoint. A canonical fact in
+\(\mathcal{F}_i\) has the form
+\[
+f=(e,r,v,\tau,p),
+\]
+where \(p\in\mathcal{P}_i\). The index records the source support and
+certification checks for each structured field. Backend-generated identifiers
+are stored only in adapter-local mappings and never replace \(p\).
+
+\paragraph{Partial-but-certified extraction.}
+Structured fields may come from benchmark schemas, deterministic parsing,
+rules, or LLM-assisted extraction. An LLM assertion alone is not a
+certificate. Before a field is used for mutation applicability, \system
+checks the corresponding benchmark source, span, type, relation support, or
+temporal order independently of mutant execution. A field that cannot be
+certified remains unstructured. The index may therefore be incomplete without
+fabricating metadata.
+
+For a query that admits structured mutation, \(\mathcal{Q}_i\) stores
+\[
+\operatorname{QI}(q)=(e,s_e,r,s_r,\tau,c,\alpha),
+\]
+where the spans \(s_e,s_r\) locate the requested entity and relation, \(c\)
+stores answer-affecting constraints, and \(\alpha\) records
+checkpoint-relative answerability. QueryIntent does not store the expected
+answer.
+
+\paragraph{Checkpoint-relative absence.}
+An unsupported opportunity requires a certificate
+\[
+\operatorname{Absent}(z,r,\tau,M_i)=1,
+\]
+or the corresponding form without \(\tau\). The verification procedure
+examines the full checkpoint provenance relevant to the requested entity,
+relation, and temporal scope. It does not infer absence merely because no
+matching tuple appears in the partial \(\mathcal{F}_i\). The verifier may
+combine deterministic matching, structured lookup, and LLM-assisted analysis,
+but an LLM assertion alone cannot establish absence. The certificate is fixed
+before execution and means only that the request is unsupported by the current
+checkpoint.
+
+\paragraph{Structural and evaluator information.}
+The structural index contains non-oracle information required for mutation
+applicability and canonical region mapping. The preferred flow is
+\[
+\mathcal{I}(M_i)\longrightarrow
+\text{obligation builder}\longrightarrow
+\Omega_{r,b}\longrightarrow
+\text{scheduler}.
+\]
+The scheduler normally consumes a frozen projection of
+\(\Omega_{r,b}\); this interface choice is not a claim that the structural
+index is evaluator-sensitive. The separate ReferenceVault stores gold answers,
+\(E^{+}\), \(E^{-}\), correctness annotations, evaluator predicates, and
+failure verdicts. Those values are unavailable to mutation construction and
+search.
+
 \subsection{Mutation Implementation}
 \label{app:mutation-implementation}
 
-Given a seed \(x=(M,q)\) and an applicable mutation obligation
-\(\omega=(x,o,t)\), \system constructs a candidate mutant according to the
-operator \(o\) and target \(t\). The information needed by the mutation,
-including the queried entity, attribute, temporal scope, and supporting
-memory facts, is obtained from the seed, benchmark annotations, and checkpoint
-provenance. New mutation values are fixed before execution. An LLM is used
-only when a query mutation requires a free-form natural-language rewrite;
-it does not choose the mutation target or the memory-state change.
+Given \(x=(M,q)\) and applicable obligation \(\omega=(x,o,t)\), \system
+constructs a candidate according to the fixed operator and target. The target
+comes from the frozen structural index; it is not selected using retrieval or
+response behavior. An LLM is used only when a query operation requires
+free-form realization. It does not choose the operator, target, or memory-state
+transition.
 
 \subsubsection{Meaning-Preserving Query Mutation}
 
-Meaning-preserving mutations change the surface form of \(q\) while keeping
-the requested entity, attribute, temporal scope, answerability, and expected
-answer unchanged. We implement four transformations: paraphrasing, shortening
-removable context, adding nonrestrictive context, and changing syntactic form.
+Meaning-preserving operations change the surface form while preserving the
+entity, relation, temporal scope, answerability, and answer-affecting
+constraints in \(\operatorname{QI}(q)\). We use four transformations:
+paraphrasing, shortening removable context, adding nonrestrictive context, and
+changing syntactic form.
 
-For paraphrasing, \system provides the original query and its fixed query
-fields to an LLM and asks it to express the same request in different wording.
-Entity names, explicit temporal expressions, and other values that should
-remain unchanged are provided as protected fields.
-
-Shortening removes text that does not affect the information requested by the
-query. When the removable span was introduced by an earlier mutation,
-\system deletes that span directly. Otherwise, an LLM is used to identify a
-shorter formulation while preserving the fixed query fields. For example,
-``Based on the information stored from the earlier documents, in what country
-is Normandy located?'' may be shortened to
-``In what country is Normandy located?''.
-
-To add nonrestrictive context, \system keeps the original information request
-fixed and asks an LLM to generate a short surrounding clause that does not
-change the requested entity, attribute, or temporal scope. The generated
-context is then combined with the original query.
-
-For syntactic-form changes, \system changes the grammatical form of the
-request while keeping the same query fields. Examples include changing
-between direct and indirect questions or between alternative wh-question
-forms. When a template can perform the transformation directly, no LLM is
-used; otherwise, the fixed fields are supplied to an LLM for grammatical
+For paraphrasing, the fixed QueryIntent fields are protected while an LLM
+expresses the request in different wording. For shortening, \system removes a
+known removable span directly or asks an LLM for a shorter realization while
+protecting the fixed fields. Nonrestrictive context is accepted only when it
+introduces no new constraint. Syntactic-form changes use deterministic
+templates when possible and otherwise use an LLM only for grammatical
 realization.
 
 \subsubsection{Target-Changing Query Mutation}
 
-A target-changing mutation changes one requested entity, attribute, or
-temporal scope while preserving the rest of the query. The replacement
-target \(z'\) is selected from the same checkpoint and must correspond to a
-fact for which benchmark provenance provides a reference.
+A target-changing operation designates one primary field
+\(z\in\{e,r,\tau\}\) and a fixed replacement \(z'\). The replacement must be
+type-compatible and backed by a certified canonical fact for the unchanged
+request structure. The other primary fields and constraints remain fixed.
 
-Whenever the target appears as a replaceable span, \system performs the
-substitution directly:
+When the target has a replaceable span, \system applies
 \[
-q' = q[z \leftarrow z'].
+q'=q[z\leftarrow z'].
 \]
-For example, if the checkpoint contains supported residence facts for both
-Emma and Bob,
-``Where does Emma live?'' can be changed to
-``Where does Bob live?'' by replacing only the entity.
-
-The same procedure is used for attribute and temporal targets. If direct
-substitution produces an ungrammatical query, the original query fields and
-the fixed replacement \(z'\) are given to an LLM only to realize a grammatical
-form. The LLM does not select \(z'\) or change additional query fields.
+Otherwise, an LLM receives the original QueryIntent and the fixed replacement
+only to produce a grammatical form. The scheduler-facing obligation does not
+contain the evaluator's expected answer for the replacement. The ReferenceVault
+constructs \(G(x')\) separately.
 
 \subsubsection{Unsupported Query Mutation}
 
-An unsupported mutation changes one requested target to a type-compatible
-target for which the checkpoint contains no supporting evidence. The target
-is selected from the benchmark schema and checkpoint provenance before the
-new query is constructed.
+An unsupported mutation uses a type-compatible, structurally well-formed
+replacement for which
+\(operatorname{Absent}(z',r,\tau,M_i)=1\). The target and certificate are
+fixed before query realization. Direct slot replacement is used when possible;
+otherwise, an LLM may express the already fixed target grammatically.
 
-When possible, \system performs the change through direct slot replacement,
-as in target-changing mutation. For example, if the checkpoint contains
-biographical information about Rollo but no passport information, the
-requested attribute can be changed to ``passport number''. The resulting
-query is assigned \(a'=\bot\).
-
-We avoid obviously incompatible targets and select unsupported targets that
-remain plausible for the entity and query form. An LLM is used only when the
-fixed target must be expressed in a grammatical query.
+Neither absence from the partial fact table, failed retrieval, an incorrect
+answer, nor an uncorroborated LLM claim establishes unsupportedness. The
+evaluator separately assigns the resulting checkpoint-relative reference with
+\(a'=\bot\).
 
 \subsubsection{Update Memory Mutation}
 
-An update changes the current value of an existing entity--attribute pair.
-The original tuple
+An update starts from a certified fact
 \[
-(e,r,v_{\mathrm{old}})
+(e,r,v_{\mathrm{old}},\tau,p)
 \]
-is obtained from the checkpoint provenance. \system then chooses a
-type-compatible value \(v_{\mathrm{new}}\neq v_{\mathrm{old}}\) before
-execution and defines the intended transition
+and fixes a different, type-compatible value \(v_{\mathrm{new}}\) under a
+later temporal or state position. The intended transition preserves \(e\) and
+\(r\):
 \[
-(e,r,v_{\mathrm{old}})
-\rightarrow
-(e,r,v_{\mathrm{new}}).
+(e,r,v_{\mathrm{old}})\longrightarrow(e,r,v_{\mathrm{new}}).
 \]
+Both values belong to the same canonical region in the original checkpoint
+universe \(U_i\).
 
-If the backend provides an explicit update operation, \system applies it to
-the selected memory entry. If the backend represents updates through later
-interactions rather than a direct update call, \system appends a new
-interaction expressing \(v_{\mathrm{new}}\) after the original history and
-lets the tested memory system process the resulting history normally. For
-example,
-``Emma lives in Chicago''
-may be followed by
-``Emma now lives in Seattle.''
-
-In this case, \system does not manually construct a corrected final memory
-state. The tested backend is responsible for incorporating the later
-information into \(M'\). Systems that preserve historical information may
-retain \(v_{\mathrm{old}}\); the mutation follows the backend's native update
-semantics.
+If the backend exposes a public update operation, \system invokes it. If the
+backend represents updates through later interactions or episodes, \system
+appends the fixed later interaction and lets the backend process it normally.
+It does not directly rewrite backend state into a desired final state. A
+backend may retain the old value as history; validity depends on whether its
+observable state represents the new value according to its native semantics.
 
 \subsubsection{Deletion Memory Mutation}
 
-A deletion keeps \(q\) fixed and removes a selected fact from an isolated
-copy of \(M\). The target fact is identified from checkpoint provenance and,
-when available, its backend memory identifier.
+A deletion targets an existing certified fact and a faithful public or native
+backend operation. Its obligation is applicable only if that operation can
+realize the designated transition without changing other information relevant
+to the fixed query or otherwise violating the one-input mutation relation.
 
-When the backend exposes a delete or forget operation, \system invokes that
-operation directly. If several stored records correspond to the selected
-fact, the mutation target specifies whether one record or all known support
-for that fact is removed. No query rewriting or LLM generation is required
-for the deletion itself.
+The adapter may use a backend-local identifier to invoke the operation, but it
+must first resolve that identifier to stable checkpoint provenance. Low-level
+storage operations are not used to imitate a semantic deletion that the
+backend does not support. In particular, Graphiti episode deletion is
+applicable only when deleting the episode does not remove multiple relevant
+facts or otherwise violate the intended transition; low-level edge deletion is
+not substituted. An unsupported deletion opportunity is marked
+\textsc{inapplicable}.
+
+Deletion may make the target inactive in the descendant state. Its canonical
+region nevertheless remains part of the frozen measurement universe \(U_i\).
 
 \subsubsection{Unrelated Change Memory Mutation}
 
-An unrelated change modifies information that is outside the target of the
-fixed query. Its purpose is to test whether a memory write concerning other
-information interferes with the use of memory relevant to \(q\).
-
-Given the reference evidence for \(q\), \system selects a different
-entity--attribute pair from checkpoint provenance, or defines a new
-unrelated fact. For example, while the fixed query asks
-``Where does Emma live?'', the mutation may add
-``Bob prefers skiing'' or update an existing preference for Bob.
-
-The unrelated change is applied using the backend's normal addition or update
-operation. The memory information needed by the fixed query is not selected
-as the mutation target, so its expected reference remains unchanged:
+An unrelated change selects an already indexed region
 \[
-G(x')=G(x).
+u\in U_i\setminus
+\operatorname{RelevantRegions}(\operatorname{QI}(q)).
 \]
+It changes the value or state within \(u\) using the backend's normal
+operation. All indexed information structurally relevant to the fixed
+QueryIntent must remain unchanged. For example, a query about Alice's
+residence may be paired with a change from Bob's hobby of tennis to golf when
+Bob's hobby is already an indexed region.
 
-\subsection{Mutation Validation}
+The operator cannot introduce a wholly new entity--relation region. A proposed
+change to a region outside \(U_i\) is \textsc{inapplicable}. Unrelatedness is
+established from QueryIntent and structural regions, not from \(E^{+}\) or
+\(E^{-}\).
+
+\subsection{Mutation Applicability and Validation}
 \label{app:mutation-validation}
 
-Mutation validation checks whether a generated candidate satisfies the
-relation required by its operator before the candidate is executed as a
-fuzzing test. The validator does not inspect the retrieval result or final
-answer produced by the mutant. This avoids accepting or rejecting a test
-because of the behavior that the test is meant to measure.
+For backend \(b\), an opportunity enters
+\(\mathcal{T}_{o,b}(x)\) only if its structural precondition holds and the
+backend can faithfully realize it. The resulting applicability mask is frozen
+and shared by Random Mutation, Unguided LLM Mutation, and \system for the same
+checkpoint, backend, and repetition condition. Exclusion reasons are recorded.
 
-For each candidate \(x'\) generated from parent \(x\) by operator \(o\),
-we construct a validation certificate
+\textsc{Inapplicable} describes an operator-target pair that cannot be
+faithfully constructed or executed. Such a target is excluded from
+\(\Omega_{r,b}\), is not sent to a generator, and does not enter the applicable
+obligation denominator. \textsc{Invalid} describes a generated candidate for
+an applicable obligation that fails validation. Invalid generation does not
+consume the valid-execution budget, leaves the obligation uncovered, and may
+be retried under the cap frozen after the pilot.
+
+For candidate \(x'\) generated from \(x\) by \(o\), validation produces
 \[
-V_o(x,x') \in \{0,1\}.
+V_o(x,x')\in\{0,1\}.
 \]
-The candidate is executed only when \(V_o(x,x')=1\). The certificate is
-computed from structured query information, checkpoint provenance, and
-memory-operation results. An LLM may be used to generate a candidate, or as
-an additional semantic check, but it cannot make the final validity
-decision by itself.
+Execution occurs only if \(V_o(x,x')=1\). The certificate uses the parent and
+candidate forms, structural index, provenance, and observable backend
+operation or state information. It never uses the mutant retrieval, mutant
+response, ReferenceVault, or failure oracle. An LLM may generate a candidate
+or contribute a rejection check, but cannot make the final acceptance decision
+alone.
 
-\textbf{Canonical query description.}
-During seed construction, each query is associated with a canonical
-description
+\paragraph{Query validation.}
+A meaning-preserving candidate is valid only when its certified QueryIntent
+preserves \(e,r,\tau,c,\alpha\). A target-changing candidate is valid only
+when the designated slot has the fixed replacement and the remaining primary
+slots and constraints are unchanged. Unsupported validation additionally
+requires the precomputed checkpoint-wide absence certificate.
+
+\paragraph{Memory-state validation.}
+Memory validation checks \(M\rightarrow M'\) independently of query behavior.
+An update must preserve entity and relation, use the fixed new value at a later
+state position, remain in the target's anchored region, and be observably
+represented under native backend semantics. A deletion must show that the
+designated target existed before the operation and became removed or inactive
+afterward with no unintended relevant change. An unrelated change must remain
+within its fixed existing region and leave all structurally relevant indexed
+information unchanged.
+
+When the backend cannot provide operation results or observable state
+sufficient for these checks, the opportunity is \textsc{inapplicable} for
+RQ1. It is not admitted as an unverified behavioral probe.
+
+\subsection{Canonical Region Construction and Mapping}
+\label{app:region-mapping}
+
+For a certified fact, define
 \[
-I(q)=(e,r,\tau,c),
+\kappa(f)=(\texttt{entity-relation},
+\operatorname{norm}(e),\operatorname{norm}(r)).
 \]
-where \(e\) is the requested entity, \(r\) is the requested attribute or
-relation, \(\tau\) is the temporal scope, and \(c\) contains any additional
-constraints that affect the answer. These fields are obtained from benchmark
-annotations and checkpoint provenance when available. For generated tests,
-the mutation operator specifies which field is allowed to change. The
-canonical description does not contain the expected answer.
+The normalization procedure is chosen after the pilot and frozen before full
+evaluation. It is shared across methods.
 
-This representation lets the validator check query mutations without asking
-an LLM whether two queries ``mean the same thing'' as the only criterion.
-When a benchmark does not provide all fields directly, we derive them from
-the referenced memory records and the known mutation target. Candidates for
-which a reliable canonical description cannot be obtained are excluded from
-confirmed testing.
+For every stable checkpoint source unit \(p\), let
+\[
+K_i(p)=\{\kappa(f):f\text{ has provenance }p
+\text{ and a certified entity--relation key}\}.
+\]
+The source contributes
+\[
+\operatorname{RegionsForSource}_i(p)=
+\begin{cases}
+K_i(p), & K_i(p)\neq\varnothing,\\
+\{(\texttt{source},p)\}, & K_i(p)=\varnothing.
+\end{cases}
+\]
+Thus, a source with any certified semantic key contributes only its certified
+semantic regions. Partial residual text does not cause a simultaneous source
+fallback. When the source yields no certified entity--relation region, the
+stable source ID is the sole conservative fallback.
 
-\textbf{Meaning-preserving query mutation.}
-A meaning-preserving candidate \(q'\) is valid only if
-\(I(q')=I(q)\). In practice, the validator checks that the requested entity,
-attribute, temporal scope, and answerability are unchanged. It also checks
-that \(q'\) does not introduce an additional condition that can change the
-answer.
+The original checkpoint defines one frozen measurement anchor
+\[
+U_i:=U(M_i)=
+\bigcup_{p\in\mathcal{P}_i}\operatorname{RegionsForSource}_i(p).
+\]
+No descendant state defines another universe. For every retrieved entry \(m\)
+from any descendant state, the backend adapter resolves local identifiers to
+stable provenance and constructs
+\[
+\operatorname{FactMap}_{b,i}(m)=
+\{f:m\text{ can reliably be shown to represent }f\}.
+\]
+It then defines
+\[
+R^{\mathrm{sem}}_{b,i}(m)=
+\{\kappa(f):f\in\operatorname{FactMap}_{b,i}(m)\}.
+\]
+Source fallback is represented separately:
+\[
+R^{\mathrm{fallback}}_{b,i}(m)=
+\{(\texttt{source},p):m\text{ has reliable provenance to }p
+\land K_i(p)=\varnothing\}.
+\]
+The complete mapping is
+\[
+\rho_{b,i}(m)=R^{\mathrm{sem}}_{b,i}(m)\cup
+R^{\mathrm{fallback}}_{b,i}(m)\subseteq U_i.
+\]
+If source \(p\) has no certified semantic region, reliable provenance to
+\(p\) may map \(m\) to \((\texttt{source},p)\). If \(p\) has exactly one
+certified semantic region, reliable provenance to \(p\) is sufficient for
+that mapping. If \(p\) has multiple semantic regions, \(m\) maps only to the
+subset of canonical facts that its content and provenance reliably identify.
+When such an entry cannot be disambiguated, the adapter marks it ambiguous or
+unmapped for RegionCov instead of assigning all of \(K_i(p)\). A summarized
+entry may map to several regions only when it reliably represents several
+certified facts. Values created by a valid memory mutation inherit the
+canonical key of their designated indexed target. If reliable checkpoint
+provenance is absent, the adapter records the entry as unmapped and does not
+invent a region. RegionCov therefore counts regions represented in the
+retrieved entry rather than every region in its source unit.
 
-For LLM-generated paraphrases, \system uses a conservative two-stage check.
-First, the protected query fields in \(I(q)\) must be preserved exactly after
-entity linking and normalization. Second, a semantic checker is used only as
-a rejection filter for cases whose surface form changes substantially. The
-candidate is accepted only when the structured checks pass; agreement from
-the semantic checker alone is insufficient.
+\paragraph{Mapping-quality diagnostic.}
+For all retrieved entries considered in a condition, we report
+\[
+\operatorname{MappingRate}=
+\frac{|\{m:\rho_{b,i}(m)\neq\varnothing\}|}
+{|\{m:m\text{ is a retrieved entry considered}\}|}.
+\]
+We also log mapped entries, ambiguous entries whose multi-fact semantic
+content cannot be reliably disambiguated, and unmapped entries lacking another
+reliable mapping. MappingRate is reported by backend/benchmark condition and
+optionally by method as a sanity check. It is diagnostic only: it does not
+guide scheduling, seed retention, or mutation selection; it does not enter the
+RegionCov numerator or denominator; and it is not treated as a primary RQ1
+effectiveness metric.
 
-\textbf{Target-changing query mutation.}
-For a target-changing mutation, the operator specifies one field
-\(z \in \{e,r,\tau\}\) and its replacement \(z'\). The candidate is valid
-when the intended field changes to \(z'\) and all remaining fields stay
-unchanged. Formally, if \(I(q)=(e,r,\tau,c)\), then exactly one designated
-component may differ in \(I(q')\). The new target must also have reference
-evidence in the checkpoint provenance, so that \(G(x')\) can be constructed
-before execution.
+\subsection{Campaign Initialization and Execution Accounting}
+\label{app:campaign-accounting}
 
-\textbf{Unsupported query mutation.}
-An unsupported mutation is accepted only when the requested
-entity--attribute--scope combination has no supporting evidence in the
-checkpoint provenance. Absence is checked over the reference records used to
-construct the checkpoint, not from a failed retrieval. This prevents a poor
-retriever from making an otherwise answerable query appear unsupported.
+One campaign is identified by
+\[
+(M_i,b,h,s),
+\]
+for checkpoint \(M_i\), backend \(b\), method \(h\), and repetition seed \(s\).
+Its budget \(B\) is the number of valid new mutant executions.
 
-\textbf{Memory-state mutation.}
-For memory-state mutations, validation checks the state transition
-\(M \rightarrow M'\) independently of the query result. When the backend
-exposes stored entries, \system compares the relevant records before and
-after the operation. When the backend provides operation logs or explicit
-success responses, these are also recorded in the validation certificate.
+For fixed \((M_i,b,s)\), \system first constructs one backend checkpoint and a
+frozen initialization artifact. Exact state cloning for all three methods is
+preferred. If cloning is unavailable, all methods replay the same artifact
+with all controllable randomness, model versions, prompts, decoding settings, and
+ingestion configuration frozen. Identical replay input alone does not prove
+equivalent backend state. Before method-specific fuzzing, \system checks
+initialization equivalence and records a stable state identity, fingerprint,
+or canonical state projection sufficient to establish equivalent starting
+states. The concrete fingerprinting algorithm is deferred to the backend
+implementation and capability-test phase. If equivalence cannot be
+established, the condition is recorded as an initialization or capability
+failure and excluded from paired RQ1 comparison until resolved.
 
-An \emph{update} is valid when the old and new values refer to the same
-entity and attribute, the new value is added after the old value, and the
-backend represents the new value according to its normal update semantics.
-A backend may keep the old record for history; therefore, validity does not
-require physical removal of the old value. It requires that the new value be
-recorded as the later or active value according to the backend state.
+After equivalence is established, the original query set is executed to
+produce shared parent observations and
+\[
+C_0^{(i,b,s)}.
+\]
+These executions do not consume \(B\).
 
-A \emph{deletion} is valid when the target exists before the operation and
-is removed or marked inactive afterward. If the backend supports a dedicated
-forget or delete operation, \system also requires that the operation report
-success.
+An observation cache is keyed by exact state identity and exact query
+identity. An initial seed receives its cached \(U(x)\) during shared
+initialization. When a valid mutant is executed, its \(U(x')\) is stored with
+the retained seed. If that exact seed later becomes a parent, the stored
+observation is reused, and only the new mutant execution consumes one unit of
+\(B\).
 
-An \emph{unrelated change} is valid when the modified record has a different
-query target from the reference evidence for \(q\), and the records in
-\(E^{+}\cup E^{-}\) remain unchanged between \(M\) and \(M'\).
+State and query identity must be proven before reuse. If a backend state must
+be reconstructed or identity cannot be established, \system logs the replay,
+reconstruction, or parent execution separately. Such overhead is neither
+silently reused nor silently counted as a valid mutant probe. The same identity
+and overhead protocol is used by all methods.
 
-\textbf{Validation for hidden memory systems.}
-Some systems do not expose their stored memory. In this case, \system only
-uses state mutations whose completion can be checked without consulting the
-test response. Examples include a memory API that confirms an insertion or
-deletion, or a system that exposes a memory-management view showing the
-resulting state.
+Each campaign stops after exactly \(B\) valid new mutant executions. Invalid
+generation and inapplicable opportunities consume no units. For \(N\)
+checkpoints, each fixed backend/method/repetition condition therefore performs
+\(N B\) valid new mutant executions, plus separately reported initialization
+and reconstruction overhead.
 
-If a state change cannot be independently verified, \system does not use
-that candidate as a confirmed memory-state test. In particular, we do not
-validate a mutation by asking the same agent whether it remembers the newly
-written fact, since that would use the behavior under test to establish the
-validity of the test itself. Such cases may still be explored as black-box
-behavioral probes, but they are reported separately from validated
-memory-state failures.
+\subsection{Manual Audit and Information-Flow Check}
+\label{app:audit-information-flow}
 
-\textbf{Failure-independent validation.}
-All validation is completed before the mutant is executed for failure
-detection. The validator may use the parent query, the generated query,
-checkpoint provenance, memory contents, and operation logs. It never uses
-the mutant retrieval \(R_k(x')\), the mutant response \(y(x')\), or the
-failure oracle \(F_o(x,x')\). Therefore, the validity of a test is
-independent of whether that test eventually exposes a memory-use failure.
+After the automatic pipeline operates, we conduct a stratified manual audit
+across benchmark, mutation operator, and backend where backend semantics affect
+applicability. The audit covers QueryIntent and span extraction, canonical
+facts, provenance mapping, target-changing validity, checkpoint-relative
+absence, fact-level retrieval-to-region mapping accuracy, update relations,
+deletion applicability, and unrelated-change validity. We report the sampling
+procedure, sample counts, exclusion reasons, and empirical metadata and
+mutation validity rates. We additionally report retrieval-mapping accuracy,
+MappingRate, and mapped, ambiguous, and unmapped entry counts separately from
+the primary effectiveness metrics. The sample size is chosen after the pilot
+and frozen before full evaluation; the audit is quality control rather than
+the primary construction mechanism.
+
+We also test the search/evaluator boundary. Given a sealed observable
+execution trace, we permute evaluator-only gold answers and failure labels and
+replay scheduling and retention from the same retrieval observations. Every
+scheduling and retention decision must remain identical. The executable
+definitions of \(\mathcal{C}_o\) and answer matching, and the distinct-failure
+deduplication rule, are specified separately before full evaluation rather
+than inferred by the implementation.
