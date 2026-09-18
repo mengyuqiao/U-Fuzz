@@ -1,0 +1,264 @@
+\section{Technical Implementation Details}
+\label{app:tech}
+
+\subsection{Mutation Implementation}
+\label{app:mutation-implementation}
+
+Given a seed \(x=(M,q)\) and an applicable mutation obligation
+\(\omega=(x,o,t)\), \system constructs a candidate mutant according to the
+operator \(o\) and target \(t\). The information needed by the mutation,
+including the queried entity, attribute, temporal scope, and supporting
+memory facts, is obtained from the seed, benchmark annotations, and checkpoint
+provenance. New mutation values are fixed before execution. An LLM is used
+only when a query mutation requires a free-form natural-language rewrite;
+it does not choose the mutation target or the memory-state change.
+
+\subsubsection{Meaning-Preserving Query Mutation}
+
+Meaning-preserving mutations change the surface form of \(q\) while keeping
+the requested entity, attribute, temporal scope, answerability, and expected
+answer unchanged. We implement four transformations: paraphrasing, shortening
+removable context, adding nonrestrictive context, and changing syntactic form.
+
+For paraphrasing, \system provides the original query and its fixed query
+fields to an LLM and asks it to express the same request in different wording.
+Entity names, explicit temporal expressions, and other values that should
+remain unchanged are provided as protected fields.
+
+Shortening removes text that does not affect the information requested by the
+query. When the removable span was introduced by an earlier mutation,
+\system deletes that span directly. Otherwise, an LLM is used to identify a
+shorter formulation while preserving the fixed query fields. For example,
+``Based on the information stored from the earlier documents, in what country
+is Normandy located?'' may be shortened to
+``In what country is Normandy located?''.
+
+To add nonrestrictive context, \system keeps the original information request
+fixed and asks an LLM to generate a short surrounding clause that does not
+change the requested entity, attribute, or temporal scope. The generated
+context is then combined with the original query.
+
+For syntactic-form changes, \system changes the grammatical form of the
+request while keeping the same query fields. Examples include changing
+between direct and indirect questions or between alternative wh-question
+forms. When a template can perform the transformation directly, no LLM is
+used; otherwise, the fixed fields are supplied to an LLM for grammatical
+realization.
+
+\subsubsection{Target-Changing Query Mutation}
+
+A target-changing mutation changes one requested entity, attribute, or
+temporal scope while preserving the rest of the query. The replacement
+target \(z'\) is selected from the same checkpoint and must correspond to a
+fact for which benchmark provenance provides a reference.
+
+Whenever the target appears as a replaceable span, \system performs the
+substitution directly:
+\[
+q' = q[z \leftarrow z'].
+\]
+For example, if the checkpoint contains supported residence facts for both
+Emma and Bob,
+``Where does Emma live?'' can be changed to
+``Where does Bob live?'' by replacing only the entity.
+
+The same procedure is used for attribute and temporal targets. If direct
+substitution produces an ungrammatical query, the original query fields and
+the fixed replacement \(z'\) are given to an LLM only to realize a grammatical
+form. The LLM does not select \(z'\) or change additional query fields.
+
+\subsubsection{Unsupported Query Mutation}
+
+An unsupported mutation changes one requested target to a type-compatible
+target for which the checkpoint contains no supporting evidence. The target
+is selected from the benchmark schema and checkpoint provenance before the
+new query is constructed.
+
+When possible, \system performs the change through direct slot replacement,
+as in target-changing mutation. For example, if the checkpoint contains
+biographical information about Rollo but no passport information, the
+requested attribute can be changed to ``passport number''. The resulting
+query is assigned \(a'=\bot\).
+
+We avoid obviously incompatible targets and select unsupported targets that
+remain plausible for the entity and query form. An LLM is used only when the
+fixed target must be expressed in a grammatical query.
+
+\subsubsection{Update Memory Mutation}
+
+An update changes the current value of an existing entity--attribute pair.
+The original tuple
+\[
+(e,r,v_{\mathrm{old}})
+\]
+is obtained from the checkpoint provenance. \system then chooses a
+type-compatible value \(v_{\mathrm{new}}\neq v_{\mathrm{old}}\) before
+execution and defines the intended transition
+\[
+(e,r,v_{\mathrm{old}})
+\rightarrow
+(e,r,v_{\mathrm{new}}).
+\]
+
+If the backend provides an explicit update operation, \system applies it to
+the selected memory entry. If the backend represents updates through later
+interactions rather than a direct update call, \system appends a new
+interaction expressing \(v_{\mathrm{new}}\) after the original history and
+lets the tested memory system process the resulting history normally. For
+example,
+``Emma lives in Chicago''
+may be followed by
+``Emma now lives in Seattle.''
+
+In this case, \system does not manually construct a corrected final memory
+state. The tested backend is responsible for incorporating the later
+information into \(M'\). Systems that preserve historical information may
+retain \(v_{\mathrm{old}}\); the mutation follows the backend's native update
+semantics.
+
+\subsubsection{Deletion Memory Mutation}
+
+A deletion keeps \(q\) fixed and removes a selected fact from an isolated
+copy of \(M\). The target fact is identified from checkpoint provenance and,
+when available, its backend memory identifier.
+
+When the backend exposes a delete or forget operation, \system invokes that
+operation directly. If several stored records correspond to the selected
+fact, the mutation target specifies whether one record or all known support
+for that fact is removed. No query rewriting or LLM generation is required
+for the deletion itself.
+
+\subsubsection{Unrelated Change Memory Mutation}
+
+An unrelated change modifies information that is outside the target of the
+fixed query. Its purpose is to test whether a memory write concerning other
+information interferes with the use of memory relevant to \(q\).
+
+Given the reference evidence for \(q\), \system selects a different
+entity--attribute pair from checkpoint provenance, or defines a new
+unrelated fact. For example, while the fixed query asks
+``Where does Emma live?'', the mutation may add
+``Bob prefers skiing'' or update an existing preference for Bob.
+
+The unrelated change is applied using the backend's normal addition or update
+operation. The memory information needed by the fixed query is not selected
+as the mutation target, so its expected reference remains unchanged:
+\[
+G(x')=G(x).
+\]
+
+\subsection{Mutation Validation}
+\label{app:mutation-validation}
+
+Mutation validation checks whether a generated candidate satisfies the
+relation required by its operator before the candidate is executed as a
+fuzzing test. The validator does not inspect the retrieval result or final
+answer produced by the mutant. This avoids accepting or rejecting a test
+because of the behavior that the test is meant to measure.
+
+For each candidate \(x'\) generated from parent \(x\) by operator \(o\),
+we construct a validation certificate
+\[
+V_o(x,x') \in \{0,1\}.
+\]
+The candidate is executed only when \(V_o(x,x')=1\). The certificate is
+computed from structured query information, checkpoint provenance, and
+memory-operation results. An LLM may be used to generate a candidate, or as
+an additional semantic check, but it cannot make the final validity
+decision by itself.
+
+\textbf{Canonical query description.}
+During seed construction, each query is associated with a canonical
+description
+\[
+I(q)=(e,r,\tau,c),
+\]
+where \(e\) is the requested entity, \(r\) is the requested attribute or
+relation, \(\tau\) is the temporal scope, and \(c\) contains any additional
+constraints that affect the answer. These fields are obtained from benchmark
+annotations and checkpoint provenance when available. For generated tests,
+the mutation operator specifies which field is allowed to change. The
+canonical description does not contain the expected answer.
+
+This representation lets the validator check query mutations without asking
+an LLM whether two queries ``mean the same thing'' as the only criterion.
+When a benchmark does not provide all fields directly, we derive them from
+the referenced memory records and the known mutation target. Candidates for
+which a reliable canonical description cannot be obtained are excluded from
+confirmed testing.
+
+\textbf{Meaning-preserving query mutation.}
+A meaning-preserving candidate \(q'\) is valid only if
+\(I(q')=I(q)\). In practice, the validator checks that the requested entity,
+attribute, temporal scope, and answerability are unchanged. It also checks
+that \(q'\) does not introduce an additional condition that can change the
+answer.
+
+For LLM-generated paraphrases, \system uses a conservative two-stage check.
+First, the protected query fields in \(I(q)\) must be preserved exactly after
+entity linking and normalization. Second, a semantic checker is used only as
+a rejection filter for cases whose surface form changes substantially. The
+candidate is accepted only when the structured checks pass; agreement from
+the semantic checker alone is insufficient.
+
+\textbf{Target-changing query mutation.}
+For a target-changing mutation, the operator specifies one field
+\(z \in \{e,r,\tau\}\) and its replacement \(z'\). The candidate is valid
+when the intended field changes to \(z'\) and all remaining fields stay
+unchanged. Formally, if \(I(q)=(e,r,\tau,c)\), then exactly one designated
+component may differ in \(I(q')\). The new target must also have reference
+evidence in the checkpoint provenance, so that \(G(x')\) can be constructed
+before execution.
+
+\textbf{Unsupported query mutation.}
+An unsupported mutation is accepted only when the requested
+entity--attribute--scope combination has no supporting evidence in the
+checkpoint provenance. Absence is checked over the reference records used to
+construct the checkpoint, not from a failed retrieval. This prevents a poor
+retriever from making an otherwise answerable query appear unsupported.
+
+\textbf{Memory-state mutation.}
+For memory-state mutations, validation checks the state transition
+\(M \rightarrow M'\) independently of the query result. When the backend
+exposes stored entries, \system compares the relevant records before and
+after the operation. When the backend provides operation logs or explicit
+success responses, these are also recorded in the validation certificate.
+
+An \emph{update} is valid when the old and new values refer to the same
+entity and attribute, the new value is added after the old value, and the
+backend represents the new value according to its normal update semantics.
+A backend may keep the old record for history; therefore, validity does not
+require physical removal of the old value. It requires that the new value be
+recorded as the later or active value according to the backend state.
+
+A \emph{deletion} is valid when the target exists before the operation and
+is removed or marked inactive afterward. If the backend supports a dedicated
+forget or delete operation, \system also requires that the operation report
+success.
+
+An \emph{unrelated change} is valid when the modified record has a different
+query target from the reference evidence for \(q\), and the records in
+\(E^{+}\cup E^{-}\) remain unchanged between \(M\) and \(M'\).
+
+\textbf{Validation for hidden memory systems.}
+Some systems do not expose their stored memory. In this case, \system only
+uses state mutations whose completion can be checked without consulting the
+test response. Examples include a memory API that confirms an insertion or
+deletion, or a system that exposes a memory-management view showing the
+resulting state.
+
+If a state change cannot be independently verified, \system does not use
+that candidate as a confirmed memory-state test. In particular, we do not
+validate a mutation by asking the same agent whether it remembers the newly
+written fact, since that would use the behavior under test to establish the
+validity of the test itself. Such cases may still be explored as black-box
+behavioral probes, but they are reported separately from validated
+memory-state failures.
+
+\textbf{Failure-independent validation.}
+All validation is completed before the mutant is executed for failure
+detection. The validator may use the parent query, the generated query,
+checkpoint provenance, memory contents, and operation logs. It never uses
+the mutant retrieval \(R_k(x')\), the mutant response \(y(x')\), or the
+failure oracle \(F_o(x,x')\). Therefore, the validity of a test is
+independent of whether that test eventually exposes a memory-use failure.

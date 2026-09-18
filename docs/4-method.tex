@@ -1,0 +1,245 @@
+\section{Method}
+\label{sec:method}
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/ufuzz.pdf}
+    \vspace{-10pt}
+    \caption{Overview of \system, which builds seeds and references from memory checkpoints, generates validated query and memory-state mutations, and executes each seed-mutant pair to detect memory-use failures. Retrieval coverage and divergence guide seed retention for later rounds, while failure labels are kept outside the fuzzing search. As in typical fuzzing research, fault mitigation is treated as an independent topic and is beyond the scope of fuzzing research.}
+    \label{fig:method}
+    \vspace{-10pt}
+\end{figure}
+
+We develop \system, a fuzzing framework for discovering the memory-use
+failures defined in \S\ref{sec:problem}. \system first constructs test seeds
+from memory checkpoints collected during normal agent tasks
+(\S\ref{subsec:seed-init}). It then generates and validates query or
+memory-state mutations under an explicit coverage requirement
+(\S\ref{subsec:mutation}). Finally, it executes each valid parent--mutant
+pair, checks whether the expected memory-use relation is violated, and
+retains useful mutants for later fuzzing rounds
+(\S\ref{subsec:execution}).
+
+
+\subsection{Seed Initialization}
+\label{subsec:seed-init}
+
+\system starts from checkpoints taken after an agent has already accumulated
+memory through normal interactions. Let \(H_{1:t}=\langle h_1,\ldots,h_t\rangle\)
+denote the interaction history up to time \(t\), and let \(M_t\) denote the
+memory state after these interactions. The history \(H_{1:t}\) is kept as provenance for \(M_t\). If the memory
+system allows its state to be copied, \system creates isolated copies of
+\(M_t\) and fuzzes those copies. If the state is hidden or cannot be copied,
+\system recreates the checkpoint in a separate session by replaying
+\(H_{1:t}\). Thus, fuzzing starts from a memory state created by normal
+agent use, while the original task and its memory remain unchanged.
+
+
+We define a seed (i.e., a test case) as \(x=(M_t,q)\), where \(q\)
+is a query that may use information stored in \(M_t\). Multiple checkpoints
+can be taken from the same task so that fuzzing covers different stages of
+memory growth. Besides, each seed also has a reference for evaluation:
+\(G(x)=(a,E^{+},E^{-})\). Here, \(a\) is the expected answer,
+\(E^{+}\) contains the evidence that validly supports \(a\), and
+\(E^{-}\) contains evidence from memory that should not support the current answer,
+such as an outdated or irrelevant fact. We use \(a=\bot\) when the memory
+does not contain information that supports an answer to \(q\). The
+references come from benchmark answers and interaction provenance when
+available. A seed without a reliable reference may still be used to find
+new behavior, but it is not counted as a confirmed failure.
+
+Diverse but limited number of query cases will be collected as an initial seed corpus, \(\mathcal{S}_0=\{x\}\). Note that the reference set is separated from the seed corpus since the seed is used to construct valid tests and the reference is used to judge their results after execution. Failure labels obtained from \(G(x)\) are never used to choose the next seed or allocate additional probes.
+
+
+\subsection{Mutation}
+\label{subsec:mutation}
+
+Given a seed \(x=(M,q)\), \system changes one input to memory use at a time.
+A \textbf{query mutation} produces \(x'=(M,q')\), while a \textbf{memory-state mutation}
+produces \(x'=(M',q)\). Each mutation operator \(o\) defines three parts:
+an applicability condition \(\mathrm{pre}_o\), a transformation that
+constructs \(x'\), and an expected relation \(\mathcal{C}_o\) between the
+parent and mutant executions. Here, \(\mathcal{C}_o\) is a concrete
+instance of the query-related or memory-state requirement defined in
+\S\ref{sec:problem}. Changing only one input in each parent-mutant pair
+will keep the source of an observed difference clear. A retained mutant can
+become a seed in a later round, so different changes may accumulate across
+rounds.
+
+
+\textbf{I. Query mutation:}
+A query mutation keeps \(M\) fixed and changes \(q\). \system first chooses
+the relation that should hold between \(q\) and \(q'\), then generates a
+query that satisfies that relation. We use three classes of operations. \textbf{(I-1) Meaning-preserving mutation:}
+The mutant keeps the requested entity, attribute, time scope, answerability,
+and expected answer unchanged, so \(a'=a\). Operators include paraphrasing,
+shortening removable context, adding nonrestrictive context, and changing
+the syntactic form of the query. These mutations test whether equivalent
+queries continue to use the same relevant memory. \textbf{(I-2) Target-changing mutation.}
+The mutant changes one requested target while preserving the rest of the
+query. If \(z\) is a replaceable entity, attribute, or time scope and
+\(z'\) is another target with known evidence in \(M\), then
+\(q'=q[z\leftarrow z']\). The provenance of \(M\) supplies the new
+reference \(G(x')\). This mutation lets \system test information that exists
+in memory but is not queried by the original seed. \textbf{(I-3) Unsupported mutation.}
+The mutant replaces the requested target with \(z_{\emptyset}\), for which
+the checkpoint has no supporting evidence. The expected answer is therefore
+\(a'=\bot\). The absence of support is established from the checkpoint
+provenance before execution; a failed retrieval or incorrect response is
+not used to decide that a query is unsupported.
+
+
+
+\textbf{II. Memory-state mutation:}
+A memory-state mutation keeps \(q\) fixed and applies a controlled memory
+operation \(\delta\) to an isolated copy of \(M\), producing
+\(M'=\delta(M)\). When the system provides memory operations, \system uses
+those operations directly. If the memory can only be changed through
+interaction, \system appends the required interaction to the history that
+created \(M\) and builds \(M'\) in a separate session. 
+
+Specifically, we consider three operations. \textbf{(II-1)} An \textbf{update} introduces a later value for an existing
+entity-attribute pair. \textbf{(II-2)} A \textbf{deletion} removes an existing
+fact. \textbf{(II-3)} An \textbf{unrelated change} adds or changes information
+that is not related to the query. The last operation serves as a control:
+the memory state changes, but the information needed by \(q\) should remain
+unchanged. Each operation also determines \(G(x')\). For an update from
+\(v_{\mathrm{old}}\) to \(v_{\mathrm{new}}\), the expected answer becomes
+\(v_{\mathrm{new}}\), while evidence for \(v_{\mathrm{old}}\) is placed in
+\(E^{-}\). After deletion, the deleted evidence is placed in \(E^{-}\);
+if no valid evidence remains, then \(a'=\bot\). A relevant addition extends
+\(E^{+}\) when the new fact should support the query. An unrelated change
+keeps \(G(x')=G(x)\). Thus, the expected effect of a memory mutation is
+fixed before \(M'\) is tested.
+
+Due to space constraints, we defer the implementation details and subsequent validation of mutated results into Appendix \ref{app:tech}.
+
+\textbf{Mutation coverage:}
+Since the space of natural-language queries is unbounded, \system defines
+coverage over the finite mutation opportunities available from the current
+seed corpus. At the beginning of round \(r\), \system fixes the seed corpus
+\(\mathcal{S}_r\). Each mutation obligation \(\omega=(x,o,t)\) pairs a
+seed \(x\), an applicable operator \(o\), and one valid target \(t\).
+For query mutations, \(t\) identifies a query element or another fact that
+can be queried; for memory-state mutations, it identifies the fact or
+relation to be changed. Let \(\mathcal{T}_o(x)\) denote the valid targets
+for \(o\). We define
+\begin{equation}
+\Omega_r =
+\left\{
+(x,o,t)
+\;\middle|\;
+x\in\mathcal{S}_r,\;
+t\in\mathcal{T}_o(x),\;
+\mathrm{pre}_o(x,t)=1
+\right\}\quad \mathrm{and}\quad
+\mathrm{Cov}_{\mathrm{mut}}^{(r)} =
+\frac{|\Omega_r^{\mathrm{exec}}|}{|\Omega_r|}
+\label{eq:mutation-coverage}
+\end{equation}
+where \(\Omega_r^{\mathrm{exec}}\) contains the obligations that have
+produced at least one valid executed mutant.
+
+\system gives every uncovered obligation one generation attempt before
+allocating additional probes to covered obligations. Thus, for a fixed
+\(\Omega_r\), if every obligation admits a valid mutant and the round budget
+is sufficient to execute one mutant for each obligation, then
+\(\mathrm{Cov}_{\mathrm{mut}}^{(r)}=1\). This guarantee applies to the
+operators and targets represented in \(\Omega_r\), not to all possible
+natural-language queries. The obligation set remains fixed within a round;
+retained mutants are added to \(\mathcal{S}_{r+1}\), where they may create
+new obligations. Any remaining budget is then used to generate additional
+variants from covered obligations.
+
+
+% \textbf{Validation:}
+% Every generated mutant is validated before execution using information that
+% is independent of the test outcome. \system checks whether the intended
+% query relation or memory operation has actually been preserved, using the
+% query structure, checkpoint provenance, and memory-operation results
+% available from the tested system. An LLM may propose a mutant, but its
+% judgment alone is never sufficient to accept one. Invalid mutants are
+% discarded, and their mutation obligations remain uncovered. Detailed
+% validation rules are given in Appendix~\ref{app:mutation-validation}.
+
+
+\subsection{Execution and Fuzzing}
+\label{subsec:execution}
+
+For each pair \((x,x')\) after validation of mutants, \system executes the two
+tests in isolated memory states. Let \(U(x)\) denote the observed memory-use
+behavior of \(x\). If retrieval is visible, we record
+\(U(x)=(R_k(x),y(x))\), where \(R_k(x)=[m_1,\ldots,m_k]\) is the ranked
+top-\(k\) retrieved memory and \(y(x)\) is the final response. If retrieval
+is hidden (e.g., on API-based LLMs), we observe only \(y(x)\).
+
+
+\textbf{Failure detection:}
+Recall that each test \(x\) has reference
+\(G(x)=(a,E^{+},E^{-})\), where \(a\) is the expected answer,
+\(E^{+}\) contains valid supporting evidence, and \(E^{-}\) contains
+evidence that should not support the answer. When retrieval is visible,
+\system matches entries in \(R_k(x)\) with \(E^{+}\) and \(E^{-}\) using
+memory identifiers or provenance. We use
+\(r^{+}(x)=\min_{m\in E^{+}}\mathrm{rank}(m,R_k(x))\) and define
+\(r^{-}(x)\) in the same way; a missing item has rank \(\infty\).
+We also use \(\mathrm{Ans}(y(x),a)\) to check whether the response gives
+the expected answer, or correctly avoids an answer when \(a=\bot\).
+
+For a mutant produced by operator \(o\), the required relation
+\(\mathcal{C}_o\) is fixed by the mutation type and its references. A
+memory-use failure is recorded when this relation is violated:
+\begin{equation}
+F_o(x,x') =
+\mathbf{1}\!\left[
+\neg\mathcal{C}_o
+\left(
+U(x),U(x');
+G(x),G(x')
+\right)
+\right]
+\label{eq:failure-detection}
+\end{equation}
+where \(F_o(x,x')=1\) denotes a confirmed memory-use failure and
+\(F_o(x,x')=0\) means that the required relation is satisfied. The concrete condition represented by \(\mathcal{C}_o\) depends on the
+mutation. For a meaning-preserving query mutation, \(F_o=1\) when the two
+equivalent queries no longer receive consistent support or produce
+inconsistent answers. For a target-changing mutation, \(F_o=1\) when the
+mutant does not follow the reference of the new target. For an unsupported
+query, \(F_o=1\) when the system produces a factual answer from memory even
+though \(G(x')\) specifies \(a'=\bot\). For a memory-state mutation,
+\(F_o=1\) when the observed behavior does not follow the known state change:
+for example, an old value remains preferred after an update, deleted
+evidence is still used, or an unrelated change alters the result for the
+fixed query.
+
+When retrieval is visible, \system can also report where the failure is
+observed. Missing valid evidence, or a stale or deleted item ranked ahead of
+valid evidence, indicates a failure in memory selection. If valid evidence
+is retrieved but \(y(x)\) does not match \(a\), the failure occurs after
+selection when the agent uses that memory. When retrieval is hidden,
+\system reports only the end-to-end memory-use failure.
+
+
+\textbf{Seed retention and iteration:}
+Failure detection does not affect the fuzzing search. \system retains
+mutants using only results observed by fuzzing. For retrieval-visible
+systems, it measures retrieval change with
+\(R_{\mathrm{div}}(x,x')=1-\mathrm{RBO}(R_k(x),R_k(x'))\) for
+meaning-preserving mutations and tracks newly reached memory targets through
+\(\mathrm{Reg}(x')=\{\rho(m)\mid m\in R_k(x')\}\), where \(\rho(m)\)
+maps an entry to its entity-attribute pair or entry identifier. If
+\(\mathcal{V}_r\) contains the targets already reached in round \(r\), the
+coverage gain is
+\(R_{\mathrm{cov}}(x')
+=|\mathrm{Reg}(x')\setminus\mathcal{V}_r|/
+\max(1,|\mathrm{Reg}(x')|)\).
+\system also records whether the mutant introduces a new retrieval pattern,
+such as a new top-ranked item or retrieved set. A mutant is retained when it
+reaches a new memory target or produces a new retrieval pattern; retrieval
+divergence is used to prioritize retained meaning-preserving mutants. For
+systems with hidden retrieval, retention uses changes in the final response.
+At the end of round \(r\), retained mutants are added to
+\(\mathcal{S}_{r+1}\), where they may create new mutation obligations for
+the next round. Confirmed failures are stored only for evaluation and
+reporting.

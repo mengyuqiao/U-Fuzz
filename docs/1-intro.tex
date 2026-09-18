@@ -1,0 +1,48 @@
+\section{Introduction}
+\label{sec:intro}
+
+Persistent memory is widely used as the external storage of LLM agents to carry information across long and complex interactions, allowing agents to recall stored facts, past experiences, and user context when handling new requests \citep{maharana2024evaluating,wu2024longmemeval,hu2026evaluating}. Notably, \textbf{a correct memory can still be used incorrectly}: a small change to a request, such as paraphrasing, may cause the correct memory to be missed or displaced by another record, while a memory update may leave an outdated record ranked above the current one. Reliable agentic memory therefore depends on trustworthy stored content and robust use of that content.
+
+However, existing work has mainly studied memory reliability of stored content. Security studies examine how poisoned or injected records enter memory and later affect agent behavior \citep{chen2024agentpoison,dong2025practical}. Diagnostic frameworks further separates retrieval failures from failures in using retrieved memories \citep{yuan2026diagnosing}, and metamorphic testing has begun to test how RAG systems respond when their underlying corpora change \citep{kim2026knowledge}. These studies reveal important memory failures, but they provide limited ways to actively search for cases where an agent uses valid memory incorrectly. Such failures are especially practical because they can arise from ordinary user requests and routine memory updates, even when every stored contents are free from poisoning or other failures. As a result, checks on memory contents alone cannot detect the failure of memory use.
+
+\textbf{This work.}
+We highlight that finding memory usage failures is essentially a fuzzing problem, as the same memory system can behave differently across many valid forms of a request and many memory states, while only a small part of this space is covered by test queries \cite{}. It is therefore difficult to know in advance which query or memory change will trigger a failure. This motivates a fuzzing-format testing that actively generates new cases, observes the resulting memory behavior, and uses that feedback to decide what to test next.
+
+
+% \begin{wrapfigure}{r}{0.8\textwidth}
+% % \vspace{-33pt}
+% \centering
+% \includegraphics[width=0.8\textwidth]{figures/intro.pdf}
+% % \vspace{-22pt}
+% \caption{Outline of memory-based reasoning and the scope of origins from the perspective of memory.}
+% \label{fig:origin}
+% % \vspace{-10pt}
+% \end{wrapfigure}
+To better support fuzzing design, we first categorize memory-use failures based on what changes during testing. The first group contains \emph{query-triggered} failures, where the memory state is fixed but the request is adapted. For example, two paraphrases asking for the same fact may retrieve different memories, or a request for unsupported information may still retrieve an unrelated record. The second group contains \emph{memory-state} failures, where the request is fixed but the stored memory changes. For example, an update may fail to replace an older value, a conflicting record may be handled incorrectly, or a deleted memory may still be retrieved. This categorization follows the two main factors that determine memory use: what the user asks and what is currently stored in memory. It also gives a simple way to test whether memory use remains correct when either factor changes.
+
+
+To find these memory-use failures, we develop \system, a fuzzing framework for agentic memory. \system starts from seed queries and the memory states built from their interaction histories. It then generates new test cases by mutating either the query or the memory state. Query mutations include paraphrasing, shortening, adding context, and moving to nearby memory items. Memory mutations include adding, updating, conflicting with, and deleting stored information. Each test case is validated before execution to make sure that the intended relation is preserved. During fuzzing, \system uses only the observed memory behavior to guide the search. It gives more attention to test cases that reach new memory regions, cause large changes in retrieval results, or produce behavior that has not been seen before. Gold answers and fault labels are kept outside the search and are used only after execution to confirm whether a failure occurred.
+
+
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/intro.pdf}
+    \vspace{-5pt}
+    \caption{Illustrations of two memory-use failures: (1) paraphrasing a query leads the same memory state to return inconsistent evidence; (2) after a memory change, retrieval returns an irrelevant entry.}
+    \label{fig:intro}
+    \vspace{-5pt}
+\end{figure}
+
+We evaluate \system on commonly used memory systems \citep{} on diverse benchmarks \citep{}. Our evaluations centered on four tasks: First, we compare \system with the original benchmark queries, random mutation, and unguided LLM-based mutation under the same testing budget. We find that \system reaches more memory regions and discovers \textbf{[XX\% / X.X$\times$]} more confirmed memory-use failures. Second, we find that the added coverage is useful: \textbf{[XX\%]} of the failures found by \system are not exposed by the original benchmark queries, and the advantage appears across both query-related and memory-state failures. Third, our ablation study shows that each search component improves testing effectiveness, with \textbf{[component]} having the largest effect on coverage and fault discovery. Finally, we test \textbf{[API-based or provider-managed memory systems]} whose internal memory and retrieval process are hidden. Even with only black-box access, \system finds \textbf{[XX]} cases where equivalent requests or memory changes lead to inconsistent memory use, showing that these failures also appear in systems whose memory mechanism cannot be directly inspected.
+
+Overall, we organize three contributions:
+\begin{itemize}
+    \item \textbf{A categorization of memory-use failures.} We group memory-use failures into query-related and memory-state failures, covering cases where retrieval does not follow the meaning of a request or the current state of memory.
+    \item \textbf{A memory fuzzing framework.} We develop \system, which mutates queries and memory states and uses observed memory behavior to guide testing while keeping gold answers and fault labels outside the search process.
+    
+    \item \textbf{Experimental validations.} We evaluate \system on open external-memory systems and closed memory-enabled systems, and show that guided fuzzing finds failures missed by fixed benchmark queries and simpler testing methods.
+\end{itemize}
+
+
+
