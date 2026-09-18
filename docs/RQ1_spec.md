@@ -16,6 +16,17 @@ Benchmarks:
 - LoCoMo
 - LongMemEval-S
 
+The frozen LongMemEval-S artifact is the authors' cleaned release:
+
+    repository: xiaowu0162/longmemeval-cleaned
+    revision: 98d7416c24c778c2fee6e6f3006e7a073259d48f
+    filename: longmemeval_s_cleaned.json
+    sha256: d6f21ea9d60a0d56f34a05b609c79c88a451d2ae03597821ea3d5a9678c3a442
+    size_bytes: 277383467
+
+The immutable revision, rather than the repository's moving main branch, is
+the reproducibility identity for RQ1.
+
 Methods:
 
 - Random Mutation
