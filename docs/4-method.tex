@@ -377,24 +377,134 @@ backend--benchmark condition is RQ1-ineligible: Cov@B is undefined, UF@B is not
 reported, and no numeric 0 or 1 is fabricated. An individual empty checkpoint
 does not exclude a campaign whose campaign-level \(E_0\) is non-empty.
 
-\paragraph{Coverage feedback.}
-Coverage-Guided starts with an empty \(\mathrm{seen}\) set and scores execution
-\(t\) by
+\paragraph{Canonical retrieval behavior.}
+Let the selected public API return
+\(R_t=(m_{t,1},\ldots,m_{t,l_t})\), where \(l_t\leq k\). For every
+retrieved object, a certified lineage
+\(\Gamma_t(m)\subseteq E_0\) identifies the non-empty set of initialized
+entries represented by that object. It is normally a singleton, but may contain
+multiple entries for a faithfully certified merge. We canonicalize it as one
+deterministic token
+\(\tau_t(m)=\operatorname{canonical\_tuple}(\Gamma_t(m))\), using one fixed
+ordering of campaign-local IDs. Singleton and multi-entry bindings both use
+tuples: \(\{e_1\}\) becomes \((e_1)\), while \(\{e_2,e_1\}\) and
+\(\{e_1,e_2\}\) both become \((e_1,e_2)\). We then define the ranked behavior
+signature
 \begin{equation}
-|\operatorname{CoverageIDs}(R_t)\setminus\mathrm{seen}|,
-\qquad
-\mathrm{seen}\leftarrow\mathrm{seen}\cup
-\operatorname{CoverageIDs}(R_t).
-\label{eq:coverage-guided-score}
+\sigma_t=\operatorname{dedup}_{\mathrm{first}}
+  (\tau_t(m_{t,1}),\ldots,\tau_t(m_{t,l_t})).
+\label{eq:retrieval-signature}
 \end{equation}
-It uses no other feedback. \system uses the same observed new-entry concept in
-place of canonical-region gain, while retaining its separate retrieval-pattern
-novelty and meaning-preserving ranked-divergence components. No search method
-receives evaluator-only information.
+Duplicate tokens retain only their first occurrence, and an empty retrieval
+has signature \(\langle\rangle\). Uncertifiable lineage is a capability
+condition rather than grounds to drop an object or substitute raw text,
+backend identifiers, FactMap, or canonical regions.
+Each complete tuple is one atomic ranked token for signature and RBO
+computation. Thus a result grouping \(\{e_1,e_2\}\) followed by one grouping
+\(\{e_3\}\) yields \([(e_1,e_2),(e_3)]\), not
+\([e_1,e_2,e_3]\). CoverageIDs still unions the underlying entries for
+coverage accounting, so atomic grouping affects retrieval behavior rather than
+Cov@B.
+
+For each root checkpoint \(i\), \(H_i^{(0)}\) contains the signatures of its
+cached initialization observations. These signatures establish prior behavior
+but add nothing to \(C_0=\varnothing\) or the Coverage-Guided seen set. A valid
+execution is scored against \(H_i^{(t-1)}\), after which
+\(H_i^{(t)}=H_i^{(t-1)}\cup\{\sigma_t\}\), whether or not its mutant is
+retained. Histories are never compared across checkpoints. Exact new behavior
+is
+\(\operatorname{NewBehavior}_t=
+\mathbf{1}[\sigma_t\notin H_i^{(t-1)}]\) and is logged rather than used as
+another scheduler objective.
+
+\paragraph{Novelty and parent-child divergence.}
+Using standard extrapolated rank-biased overlap for finite lists, define
+\(d_{\mathrm{RBO}}(S,T)=1-\mathrm{RBO}_{\mathrm{EXT},p}(S,T)\in[0,1]\),
+where larger values mean more different ranked behavior. Once \(k\) is frozen,
+we fix \(p=1-1/k\) and require \(k\geq2\). We set
+\(d_{\mathrm{RBO}}(\langle\rangle,\langle\rangle)=0\) and its distance
+between one empty and one non-empty list to 1. Retrieval-pattern novelty is
+\begin{equation}
+N_t=\min_{\sigma\in H_i^{(t-1)}}
+d_{\mathrm{RBO}}(\sigma_t,\sigma),
+\label{eq:retrieval-novelty}
+\end{equation}
+with \(N_t=1\) when the prior archive is unexpectedly empty. Only for a
+validated Meaning-Preserving Query mutation, the exact cached parent signature
+defines
+\begin{equation}
+D_t=d_{\mathrm{RBO}}(\sigma_{\mathrm{parent}(t)},\sigma_t).
+\label{eq:retrieval-divergence}
+\end{equation}
+No different parent or unverified reconstruction may substitute for it, and
+\(D_t\) is not used for the other mutation relations. The signals are distinct:
+\(N_t\) measures distance from all previously seen behavior for checkpoint
+\(i\), while \(D_t\) measures local instability from the exact parent. A child
+can therefore have low novelty because its signature appeared earlier while
+remaining highly divergent from its parent.
+
+\paragraph{Coverage and U-Fuzz priorities.}
+These priorities are post-execution feedback. Search first selects an eligible
+parent and opportunity, generates and validates a mutant, executes the valid
+mutant, and observes \(R_t\). That execution consumes one unit of \(B\) before
+\(G_t\), \(N_t\), applicable \(D_t\), and either priority score are available.
+The resulting score controls retention or future expansion priority for the
+executed mutant; it cannot rank an unexecuted candidate. The exact cached
+parent observation supplies parent divergence without changing this chronology.
+
+Let
+\begin{equation}
+A_t=\operatorname{CoverageIDs}(R_t),\quad
+G_t=|A_t\setminus C_{t-1}|,\quad
+C_t=C_{t-1}\cup A_t.
+\label{eq:online-entry-gain}
+\end{equation}
+Coverage-Guided starts with an empty seen set and uses only the raw score
+\(S_{\mathrm{CG},t}=G_t\), updating seen with \(A_t\). Certified merged
+lineage may make \(G_t>k\), and Coverage-Guided does not clip it.
+
+For U-Fuzz alone, the bounded coverage component is
+\begin{equation}
+\widetilde{G}_t=\min(1,G_t/k)=\min(G_t,k)/k.
+\label{eq:bounded-entry-gain}
+\end{equation}
+This clipping affects only scheduler priority: every member of \(A_t\) still
+enters \(C_t\) and Cov@B. For singleton lineage it reduces to \(G_t/k\); for a
+certified merge it saturates without using \(|E_0|\), \(|A_t|\), or another
+parameter. Define
+\begin{equation}
+S_{\mathrm{beh},t}=
+\begin{cases}
+(N_t+D_t)/2,&\text{Meaning-Preserving Query},\\
+N_t,&\text{otherwise},
+\end{cases}
+\qquad
+S_{\mathrm{UF},t}=\frac{\widetilde{G}_t+S_{\mathrm{beh},t}}{2}.
+\label{eq:ufuzz-priority}
+\end{equation}
+Both scores lie in \([0,1]\). This fixed equal-weight scalarization gives
+coverage and behavior equal top-level mass without giving meaning-preserving
+mutations an extra objective. We reject lexicographic coverage-first selection
+because novelty and divergence would matter only on coverage ties, making
+U-Fuzz too similar to Coverage-Guided. Pareto selection would require another
+choice rule, and outcome-tuned weights would compromise the a priori design.
+Coverage-Guided and U-Fuzz use the same repetition-seed-controlled
+deterministic principle for exact score ties; queue and eviction mechanics
+remain to be fixed.
+
+All quantities in these scores are search-side observations. They use
+initialized-entry lineage and ranked retrieval order, never response
+correctness, generated-answer behavior, gold answers, ReferenceVault evidence,
+CFS failure surfaces, fault verdicts, UF@B, or evaluator predicates. Structural
+regions and FactMap remain available for construction and auditing but do not
+define any retrieval-feedback score or Cov@B.
 
 Primary results are reported separately for LoCoMo and LongMemEval-S. Each
 benchmark--backend--method cell aggregates repetitions over seeds. The
 numerical budget, retrieval depth, retry cap, repetition count, uncertainty
 statistic, LLM-as-Judge candidate-pool and judging cost, extraction model and
-version, normalization algorithm, and manual-audit sample size are selected
-after the pilot and frozen before full evaluation.
+version, entity/relation/time/constraint canonicalization procedure, and
+manual-audit sample size are selected after the pilot and frozen before full
+evaluation. Backend-specific retrievable-entry projections, concrete queue and
+eviction mechanics, and capabilities not yet live-validated are finalized
+before execution without changing the definitions above.

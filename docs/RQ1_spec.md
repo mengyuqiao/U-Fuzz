@@ -264,8 +264,9 @@ or query the ReferenceVault.
 Search-side information may include seed identity, QueryIntent fields required
 for mutation, operators and concrete targets, applicability, construction
 provenance, backend retrieval output, campaign-local coverage-entry IDs, online
-retrieval divergence, observed new-entry coverage, and retrieval-pattern
-novelty.
+entry-lineage certificates, ranked retrieval order, cached parent retrieval
+signatures, checkpoint-local signature histories, observed new-entry coverage,
+retrieval-pattern novelty, and meaning-preserving parent-child divergence.
 
 ## Mutation obligations
 
@@ -474,21 +475,226 @@ absolute Cov@B values are interpreted primarily within the same backend.
 
 ## Coverage-guided and U-Fuzz coverage feedback
 
-Coverage-Guided starts with an empty seen set. After valid mutant execution t:
+For valid fuzzing execution t, the selected public retrieval API returns the
+ranked list:
 
-    new_entries = CoverageIDs(R_t) \ seen
-    coverage_score = |new_entries|
-    seen = seen union CoverageIDs(R_t)
+    R_t = (m_{t,1}, ..., m_{t,l_t}), where l_t <= k
 
-It uses only this signal. It cannot use canonical-region coverage, retrieval
-divergence, retrieval-pattern novelty, evaluator references, gold answers,
-failure labels, or oracle verdicts. Its queue, retention, and tie-breaking
-rules are fixed during baseline implementation.
+and k is the frozen retrieval depth. For each retrieved physical object m, let:
 
-U-Fuzz replaces its former canonical-region coverage-gain component with the
-same observed new-memory-entry concept. Retrieval-pattern novelty and ranked
-retrieval divergence remain separate U-Fuzz feedback components and receive no
-evaluator-only information.
+    Gamma_t(m) subseteq E_0
+
+be the non-empty, certified set of initialized coverage entries represented by
+m. Gamma_t(m) is normally a singleton. A faithfully certified merge may bind m
+to multiple initialized entries. Define the deterministic canonical token:
+
+    tau_t(m) = canonical_tuple(Gamma_t(m))
+
+where canonical_tuple orders campaign-local coverage-entry IDs using one fixed
+deterministic canonical ordering. Singleton and multi-entry bindings use the
+same tuple type: {e_1} becomes (e_1), and either {e_2,e_1} or {e_1,e_2}
+becomes (e_1,e_2) under that ordering. If Gamma_t(m) cannot be established
+faithfully, the implementation must report an unresolved lineage or capability
+condition. It must not silently drop m, invent a token, or fall back to FactMap
+or canonical structural regions.
+
+The ranked retrieval behavior signature is:
+
+    sigma_t =
+        dedup_first(
+            tau_t(m_{t,1}),
+            ...,
+            tau_t(m_{t,l_t}))
+
+where dedup_first retains only the first ranked occurrence of each identical
+canonical token. The empty retrieval has the valid signature sigma_t = <>.
+Thus sigma_t records which initialized entries were returned and their ranked
+order; it contains no raw retrieved text, embedding, backend score, backend
+UUID, canonical region, FactMap value, or evaluator information.
+
+Each complete tuple tau_t(m) is one atomic ranked token for sigma_t and RBO. A
+merged physical object is not expanded into artificial ranks for its members.
+For example, if m_1 represents {e_1,e_2} and m_2 represents {e_3}, then:
+
+    sigma_t = [(e_1,e_2), (e_3)]
+
+not [e_1,e_2,e_3]. By contrast, CoverageIDs(R_t) unions the underlying entries
+as {e_1,e_2,e_3} for G_t, C_t, and Cov@B. Consequently [(e_1,e_2),(e_3)] and
+[(e_1),(e_2),(e_3)] are distinct behaviors even though they represent the same
+coverage-entry set. dedup_first removes only identical complete tuple tokens.
+
+### Checkpoint-local behavior history and exact new behavior
+
+For every original root checkpoint i, maintain a separate behavior archive
+H_i^(t). Do not compare signatures across checkpoints. Initialize it from the
+cached original parent or baseline retrieval observations for that checkpoint:
+
+    H_i^(0) =
+        {canonical retrieval signatures observed during initialization
+         for root checkpoint i}
+
+These initialization signatures seed behavioral history only. Coverage still
+starts with C_0 = empty, Coverage-Guided still starts with seen = empty, and
+initialization receives no Cov@B or Coverage-Guided credit.
+
+For a valid execution t descended from checkpoint i, score sigma_t against
+H_i^(t-1) and then update:
+
+    H_i^(t) = H_i^(t-1) union {sigma_t}
+
+regardless of whether the executed mutant is retained. Archives for other root
+checkpoints are unchanged. Define the exact new-behavior indicator:
+
+    NewBehavior_t = 1[sigma_t not in H_i^(t-1)]
+
+NewBehavior_t is logged for analysis and is not a fourth independent scheduler
+objective.
+
+### RBO distance, novelty, and parent-child divergence
+
+Let RBO_EXT,p(S,T) be standard extrapolated rank-biased overlap for finite
+ranked lists, and define:
+
+    d_RBO(S,T) = 1 - RBO_EXT,p(S,T)
+
+so 0 <= d_RBO(S,T) <= 1. Larger values denote more different ranked
+retrieval behavior.
+
+Once k is frozen, set:
+
+    p = 1 - 1/k
+
+and require k >= 2 in the primary experiment. The persistence p is not tuned
+on UF@B or Cov@B. Freeze the empty-list cases as:
+
+    d_RBO(<>, <>) = 0
+    d_RBO(<>, T) = d_RBO(T, <>) = 1, for non-empty T
+
+For execution t from root checkpoint i, retrieval-pattern novelty is distance
+to the closest previously observed behavior for that checkpoint:
+
+    N_t = min_{sigma in H_i^(t-1)} d_RBO(sigma_t, sigma)
+
+equivalently:
+
+    N_t =
+        1 - max_{sigma in H_i^(t-1)} RBO_EXT,p(sigma_t, sigma)
+
+If H_i^(t-1) is empty despite initialization, define N_t = 1 and log the
+absence of a prior checkpoint-local signature.
+
+Parent-child divergence is defined only for a validated Meaning-Preserving
+Query mutation. Let sigma_parent(t) be the signature stored in the exact cached
+parent observation. Then:
+
+    D_t = d_RBO(sigma_parent(t), sigma_t)
+        = 1 - RBO_EXT,p(sigma_parent(t), sigma_t)
+
+Do not compute D_t from a different parent, an unverified reconstruction, or a
+merely similar query. If exact parent identity is unavailable, D_t is not
+validly available and no substitute is used. D_t is not a primary signal for
+Target-Changing Query, Unsupported Query, Update, Deletion, or Unrelated
+Change.
+
+N_t and D_t measure distinct phenomena. N_t measures global checkpoint-local
+novelty against all prior signatures, whereas D_t measures local instability
+relative to the exact parent. For example, if a parent retrieves [A,B,C,D] and
+its child retrieves [X,Y,Z,W], but [X,Y,Z,W] was observed earlier, N_t may be
+approximately 0 while D_t remains approximately 1.
+
+### Coverage gain and search priorities
+
+All retrieval-derived quantities and priorities below are computed only after
+a valid mutant has executed and its actual R_t has been observed. The search
+chronology is:
+
+    select eligible parent and mutation opportunity
+        -> generate mutant
+        -> validate mutant
+        -> execute valid mutant
+        -> observe R_t
+        -> compute G_t, N_t, and D_t when applicable
+        -> compute S_CG,t or S_UF,t
+        -> use the score for retention or future expansion priority
+
+The valid execution consumes one unit of B before its feedback score becomes
+available. S_CG,t and S_UF,t prioritize executed mutants as possible future
+seeds or parents; neither can rank an unexecuted candidate whose retrieval has
+not been observed. Cached exact-parent observations supply sigma_parent(t) for
+D_t but do not change this chronology.
+
+For execution t, define:
+
+    A_t = CoverageIDs(R_t)
+    G_t = |A_t \ C_{t-1}|
+    C_t = C_{t-1} union A_t
+
+CoverageIDs(R_t) contains every initialized entry certified through the
+Gamma_t bindings. Therefore a certified multi-entry retrieval can make G_t
+larger than the physical retrieval depth k. Cov@B and C_t retain all such
+entries.
+
+Coverage-Guided uses only the raw new-entry count:
+
+    S_CG,t = G_t
+
+and updates its initially empty seen set with A_t. It does not clip G_t and
+cannot use N_t, D_t, NewBehavior_t, canonical-region coverage, evaluator
+references, gold answers, failure labels, or oracle verdicts.
+
+Only for the bounded U-Fuzz priority component, normalize coverage gain as:
+
+    G_t_tilde = min(1, G_t / k)
+              = min(G_t, k) / k
+
+In the usual singleton-lineage case G_t <= k, this reduces to G_t / k. A
+certified merge can make G_t > k; clipping keeps the scheduler component in
+[0,1] without clipping G_t, A_t, C_t, Cov@B, or the Coverage-Guided score. It
+introduces no parameter and uses neither |E_0| nor |A_t| as a denominator.
+
+Define the bounded retrieval-behavior score:
+
+    S_beh,t = N_t
+        for every mutation other than Meaning-Preserving Query
+
+    S_beh,t = (N_t + D_t) / 2
+        for a validated Meaning-Preserving Query mutation
+
+and the final U-Fuzz priority:
+
+    S_UF,t = (G_t_tilde + S_beh,t) / 2
+
+Both S_beh,t and S_UF,t lie in [0,1]. Meaning-Preserving Query mutations split
+the fixed behavior-feedback mass equally between novelty and local divergence,
+rather than receiving an extra objective. With singleton lineage and G_t <= k,
+the effective weights are 0.50 coverage, 0.25 novelty, and 0.25 divergence for
+Meaning-Preserving Query, and 0.50 coverage plus 0.50 novelty for other
+relations. When a certified merge makes G_t > k, the coverage component
+saturates at 1.
+
+These weights are fixed a priori and are not optimized using pilot outcomes,
+UF@B, Cov@B, gold answers, or evaluator labels. Strict lexicographic coverage-
+first priority is not used because novelty and divergence would then affect
+search only on coverage ties, making U-Fuzz too similar to Coverage-Guided.
+Pareto selection is not used because it does not define a unique next action
+without another rule such as crowding distance, hypervolume, or a second
+ranking procedure. No tuned alpha, beta, or gamma weights are introduced.
+
+Coverage-Guided and U-Fuzz resolve exact score ties using the same deterministic
+principle controlled by the repetition seed. Queue capacity, eviction,
+batching, and other scheduler mechanics remain to be fixed during scheduler
+implementation.
+
+All terms above are search-side observables. They may use root checkpoint
+identity, campaign-local coverage IDs, certified physical-entry lineage,
+ranked retrieval order, exact cached parent signatures, and checkpoint-local
+signature histories. They cannot use gold answers, E+ or E-, ReferenceVault
+content, CFS failure surfaces, R/A/RA labels, fault verdicts, UF@B, evaluator
+correctness predicates, response correctness, or generated-answer behavior.
+CanonicalFact, structural regions, FactMap, semantic/fallback provenance
+mapping, and MappingQuality remain available for structural and auditing uses
+listed above, but they do not define sigma_t, N_t, D_t, G_t, S_beh,t, S_UF,t,
+or Cov@B.
 
 ## UF@B
 
@@ -610,13 +816,16 @@ before full evaluation:
 - uncertainty statistic;
 - LLM-as-Judge candidate-pool size and judging cost;
 - extraction model and version;
-- entity/relation normalization algorithm;
+- entity/relation/time/constraint canonicalization procedure;
 - manual-audit sample size.
 
 The following methodological definitions will be specified separately before
 full evaluation:
 
 - the executable evaluator predicates C_o and Ans, including retrieval-side
-  and answer/use-side correctness.
+  and answer/use-side correctness and the resulting R/A/RA assignment;
+- backend-specific retrievable-entry projection implementations;
+- concrete scheduler queue capacity, eviction, and batching mechanics;
+- backend capability issues not yet live-validated.
 
 No implementation may invent these parameters or definitions implicitly.

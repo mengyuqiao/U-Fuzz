@@ -363,19 +363,160 @@ retrieval; and Unrelated Change stays associated with its selected initialized
 target. An uncertifiable split, merge, or replacement makes that mutation
 opportunity \textsc{inapplicable} rather than excluding the entire condition.
 
-Coverage-Guided also starts with \(\mathrm{seen}=\varnothing\). For execution
-\(t\), it uses only
+\subsection{Retrieval Feedback}
+\label{app:retrieval-feedback}
+
+For valid fuzzing execution \(t\), the selected public API returns
 \[
-\mathrm{score}_t=
-|\operatorname{CoverageIDs}(R_t)\setminus\mathrm{seen}|,
-\qquad
-\mathrm{seen}\leftarrow\mathrm{seen}\cup
-\operatorname{CoverageIDs}(R_t).
+R_t=(m_{t,1},\ldots,m_{t,l_t}),\qquad l_t\leq k.
 \]
-Initialization retrievals receive no credit. Full \system replaces its former
-canonical-region coverage component with this observed new-entry concept while
-retaining separate retrieval-pattern novelty and meaning-preserving ranked
-retrieval divergence.
+The lineage resolver must certify a non-empty
+\(\Gamma_t(m)\subseteq E_0\) for every returned physical object. Ordinarily
+this set is a singleton. If the backend faithfully merges initialized entries,
+it may contain more than one ID. We encode the binding as the deterministic
+token
+\[
+\tau_t(m)=\operatorname{canonical\_tuple}(\Gamma_t(m)),
+\]
+using one fixed deterministic ordering of campaign-local IDs. Every binding
+uses the same tuple type: \(\{e_1\}\) becomes \((e_1)\), while
+\(\{e_2,e_1\}\) and \(\{e_1,e_2\}\) both become \((e_1,e_2)\). The ranked
+signature is
+\[
+\sigma_t=\operatorname{dedup}_{\mathrm{first}}
+(\tau_t(m_{t,1}),\ldots,\tau_t(m_{t,l_t})),
+\]
+where only the first occurrence of an identical token is retained. The empty
+retrieval has signature \(\langle\rangle\). If any required lineage cannot be
+certified, the adapter reports an unresolved lineage or capability condition;
+it cannot discard the object, invent a token, or substitute backend UUIDs, raw
+text, scores, embeddings, FactMap, or canonical structural regions.
+The complete tuple is one atomic ranked token for signature and RBO
+computation; constituent IDs are not expanded into artificial positions. For
+example, physical results representing \(\{e_1,e_2\}\) and then \(\{e_3\}\)
+produce \([(e_1,e_2),(e_3)]\), not \([e_1,e_2,e_3]\). The latter expansion
+would erase the public API's object grouping. CoverageIDs separately unions all
+underlying IDs, so both groupings reach \(\{e_1,e_2,e_3\}\) for \(G_t\),
+\(C_t\), and Cov@B. Signatures \([(e_1,e_2),(e_3)]\) and
+\([(e_1),(e_2),(e_3)]\) are therefore behaviorally distinct. First-occurrence
+deduplication removes only identical complete tuple tokens.
+
+Each root checkpoint \(i\) has an independent archive \(H_i\). Cached original
+parent and baseline observations initialize
+\[
+H_i^{(0)}=\{\text{canonical signatures observed during initialization for }i\}.
+\]
+They seed only this behavior archive, not \(C_0\) or the Coverage-Guided seen
+set. A valid execution descended from \(i\) is scored against
+\(H_i^{(t-1)}\) before
+\[
+H_i^{(t)}=H_i^{(t-1)}\cup\{\sigma_t\},
+\]
+and insertion occurs even if the mutant is not retained. Other checkpoints'
+archives are unchanged. We log
+\[
+\operatorname{NewBehavior}_t=
+\mathbf{1}[\sigma_t\notin H_i^{(t-1)}]
+\]
+for analysis, but do not add it as a scheduler objective.
+
+Let \(\mathrm{RBO}_{\mathrm{EXT},p}\) be standard extrapolated RBO for finite
+ranked lists and set
+\[
+d_{\mathrm{RBO}}(S,T)=1-\mathrm{RBO}_{\mathrm{EXT},p}(S,T),
+\qquad p=1-1/k,
+\]
+where \(d_{\mathrm{RBO}}\in[0,1]\), larger values mean more different ranked
+behavior, and the primary experiment requires \(k\geq2\). The persistence is
+therefore fixed by retrieval depth and is not tuned on UF@B or Cov@B. Empty
+lists obey
+\[
+d_{\mathrm{RBO}}(\langle\rangle,\langle\rangle)=0,
+\qquad
+d_{\mathrm{RBO}}(\langle\rangle,T)
+=d_{\mathrm{RBO}}(T,\langle\rangle)=1
+\]
+for non-empty \(T\). Checkpoint-local novelty is
+\[
+N_t=\min_{\sigma\in H_i^{(t-1)}}d_{\mathrm{RBO}}(\sigma_t,\sigma)
+=1-\max_{\sigma\in H_i^{(t-1)}}
+\mathrm{RBO}_{\mathrm{EXT},p}(\sigma_t,\sigma).
+\]
+If the prior archive is empty despite initialization, \(N_t=1\) and the
+condition is logged.
+
+For a validated Meaning-Preserving Query mutation only, let
+\(\sigma_{\mathrm{parent}(t)}\) come from the exact cached parent observation
+and define
+\[
+D_t=d_{\mathrm{RBO}}(\sigma_{\mathrm{parent}(t)},\sigma_t).
+\]
+An observation from another parent, an unverified reconstruction, or a similar
+query cannot substitute. If exact parent identity is unavailable, \(D_t\) is
+unavailable. We do not use \(D_t\) for Target-Changing Query, Unsupported
+Query, Update, Deletion, or Unrelated Change. Novelty is global within the
+checkpoint archive, whereas divergence is local to the exact parent: a child
+signature seen earlier can have \(N_t\approx0\) and still have
+\(D_t\approx1\) relative to its parent.
+
+For online memory-entry gain, let
+\[
+A_t=\operatorname{CoverageIDs}(R_t),\qquad
+G_t=|A_t\setminus C_{t-1}|,
+\qquad C_t=C_{t-1}\cup A_t.
+\]
+All initialized entries in certified multi-entry bindings enter \(A_t\) and
+\(C_t\). Consequently \(G_t\) may exceed \(k\). Coverage-Guided starts with
+\(\mathrm{seen}=\varnothing\), uses only
+\[
+S_{\mathrm{CG},t}=G_t,
+\qquad \mathrm{seen}\leftarrow\mathrm{seen}\cup A_t,
+\]
+and does not clip this score. Initialization retrievals receive no coverage
+credit.
+
+These are post-execution feedback scores. The implementation selects an
+eligible parent and opportunity, generates and validates the mutant, executes
+the valid mutant, and observes \(R_t\) before computing \(G_t\), \(N_t\),
+applicable \(D_t\), and \(S_{\mathrm{CG},t}\) or \(S_{\mathrm{UF},t}\). The
+execution has already consumed one unit of \(B\). Its score affects retention
+or future expansion priority for that executed mutant and cannot rank an
+unexecuted candidate. Parent divergence continues to use the exact cached
+parent observation.
+
+Only the U-Fuzz scalarization uses the clipped component
+\[
+\widetilde{G}_t=\min(1,G_t/k)=\frac{\min(G_t,k)}{k}.
+\]
+It equals \(G_t/k\) under singleton lineage and saturates at 1 when certified
+merges make \(G_t>k\). Clipping does not alter \(A_t\), \(G_t\), \(C_t\),
+Cov@B, or Coverage-Guided. It uses neither \(|E_0|\) nor \(|A_t|\) as a
+denominator and introduces no additional parameter.
+
+The behavior and final scores are
+\[
+S_{\mathrm{beh},t}=
+\begin{cases}
+(N_t+D_t)/2,&\text{validated Meaning-Preserving Query},\\
+N_t,&\text{otherwise},
+\end{cases}
+\qquad
+S_{\mathrm{UF},t}=\frac{\widetilde{G}_t+S_{\mathrm{beh},t}}{2}.
+\]
+Both are bounded by 1. The equal top-level weights are fixed a priori. A
+lexicographic coverage-first rule would make behavior feedback matter only on
+ties and collapse U-Fuzz toward Coverage-Guided; Pareto ranking would still
+require another action-selection rule; and outcome-tuned weights would leak
+experimental optimization into the method. Both scored methods resolve exact
+ties using the same deterministic repetition-seed-controlled principle. Queue
+capacity, eviction, and batching policies remain implementation parameters.
+
+All lineage, signatures, histories, and scores in this subsection are search-
+side. They cannot use generated-answer correctness, gold answers,
+ReferenceVault data, CFS failure surfaces, R/A/RA labels, fault verdicts, UF@B,
+or evaluator predicates. Canonical structural regions and fact/provenance
+mappings retain their construction, validation, audit, and capability roles
+but do not define these scores or Cov@B.
 
 \subsection{Canonical Semantic Fault Signature}
 \label{app:fault-signature}
@@ -482,7 +623,8 @@ After equivalence is established, each method freezes its own \(E_0\), assigns
 opaque local coverage IDs, and starts with \(C_0=\varnothing\). The original
 query set is executed to produce parent observations. These executions consume
 no units of \(B\), add no entries to \(C_0\), and do not populate the
-Coverage-Guided seen set.
+Coverage-Guided seen set. Their canonical retrieval signatures do initialize
+the checkpoint-local behavior archives \(H_i^{(0)}\).
 
 An observation cache is keyed by exact state identity and exact query
 identity. An initial seed receives its cached \(U(x)\) during shared
