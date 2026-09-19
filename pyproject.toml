@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ufuzz"
+version = "0.1.0"
+description = "Phase-1 infrastructure for U-Fuzz RQ1"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+mem0 = ["mem0ai==2.0.12"]
+amem = [
+  "agentic-memory @ git+https://github.com/agiresearch/A-mem.git@ceffb860f0712bbae97b184d440df62bc910ca8d",
+  "sentence-transformers==5.6.0",
+  "chromadb==1.5.9",
+  "rank-bm25==0.2.2",
+  "nltk==3.10.3",
+  "litellm==1.101.0",
+  "numpy==2.5.1",
+  "scikit-learn==1.9.0",
+  "openai==2.45.0",
+]
+graphiti = ["graphiti-core==0.30.2", "neo4j==5.26.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

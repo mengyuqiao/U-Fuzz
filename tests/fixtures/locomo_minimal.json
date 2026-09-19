@@ -1,0 +1,36 @@
+[
+  {
+    "sample_id": "conv-test",
+    "conversation": {
+      "speaker_a": "Alice",
+      "speaker_b": "Bob",
+      "session_1_date_time": "1:00 pm on 1 June, 2024",
+      "session_1": [
+        {
+          "speaker": "Alice",
+          "dia_id": "D1:1",
+          "text": "Alice residence Boston and Bob hobby tennis.",
+          "fixture_extra": "preserved"
+        },
+        {
+          "speaker": "Bob",
+          "dia_id": "D1:2",
+          "text": "Bob acknowledges Alice."
+        }
+      ]
+    },
+    "qa": [
+      {
+        "question": "Where does Alice live?",
+        "answer": "Boston",
+        "evidence": ["D1:1"],
+        "category": 1,
+        "fixture_extra": 7
+      }
+    ],
+    "event_summary": {"raw": true},
+    "observation": {"raw": true},
+    "session_summary": {"raw": true},
+    "fixture_top_level": "preserved"
+  }
+]

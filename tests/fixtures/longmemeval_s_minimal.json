@@ -1,0 +1,23 @@
+[
+  {
+    "question_id": "q-test",
+    "question_type": "knowledge-update",
+    "question": "Where does Alice live?",
+    "question_date": "2024/06/02 (Sun) 10:00",
+    "answer": 42,
+    "answer_session_ids": ["session-1"],
+    "haystack_dates": ["2024/06/01 (Sat) 09:00", "2024/06/02 (Sun) 09:00"],
+    "haystack_session_ids": ["session-1", "session-2"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "Alice residence Boston.", "has_answer": true},
+        {"role": "assistant", "content": "Recorded."}
+      ],
+      [
+        {"role": "user", "content": "Bob hobby tennis."},
+        {"role": "assistant", "content": "Recorded.", "fixture_extra": "preserved"}
+      ]
+    ],
+    "fixture_top_level": "preserved"
+  }
+]
