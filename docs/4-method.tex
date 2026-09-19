@@ -6,10 +6,10 @@
     \includegraphics[width=\linewidth]{figures/ufuzz.pdf}
     \vspace{-10pt}
     \caption{Overview of \system. A frozen structural index supplies certified
-    mutation opportunities and stable canonical regions, while an isolated
+    mutation opportunities and provenance, while an isolated
     reference vault supplies evaluator-only answers and evidence. Each valid
-    mutant changes exactly one input. Retrieval coverage and divergence guide
-    search without access to failure labels or the offline region universe.}
+    mutant changes exactly one input. New-memory-entry coverage and other
+    retrieval feedback guide search without access to failure labels.}
     \label{fig:method}
     \vspace{-10pt}
 \end{figure}
@@ -84,20 +84,19 @@ the scheduler normally receives a frozen obligation projection produced from
 it rather than enumerating the full index.
 
 \paragraph{Shared initialization.}
-For a fixed checkpoint \(M_i\), backend \(b\), and repetition seed \(s\), the
-backend checkpoint is constructed once. Random Mutation, Unguided LLM
-Mutation, and \system preferably start from exact clones of that state. If
-cloning is unavailable, they replay the same frozen initialization artifact
-with all controllable randomness, model versions, prompts, decoding settings, and
+For a fixed benchmark, backend \(b\), and repetition seed \(s\), every method
+initializes all eligible checkpoint states under the same frozen protocol.
+Exact cloning is preferred; otherwise, methods replay the same artifacts with
+all controllable randomness, model versions, prompts, decoding settings, and
 ingestion configuration fixed. Because identical replay input need not produce
-identical backend state, \system performs an initialization-equivalence check
-and records a stable state identity, fingerprint, or canonical state
-projection before method-specific fuzzing. The exact fingerprinting procedure
-is deferred to backend capability testing. A condition whose initialization
-equivalence cannot be established is recorded as an initialization or
-capability failure and excluded from the paired RQ1 comparison until resolved.
-After equivalence is established, the original queries and parent observations
-produce shared initial coverage \(C_0^{(i,b,s)}\), without a method index.
+identical backend state, \system compares the observable multiset of
+retrievable-entry projections for every checkpoint before method-specific
+fuzzing. The exact backend-specific projection is finalized during capability
+testing. A condition whose entry-level initialization equivalence cannot be
+established is recorded as a capability failure and excluded from paired RQ1
+comparison. Equivalent states need not share backend UUIDs or coverage IDs.
+Original queries and parent observations are then executed for initialization;
+they consume no fuzzing budget and contribute no memory-entry coverage.
 
 \subsection{Mutation}
 \label{subsec:mutation}
@@ -170,8 +169,10 @@ t\in\mathcal{T}_{o,b}(x)\right\}.
 \label{eq:mutation-obligations}
 \end{equation}
 It is generated from the frozen structural index rather than manually
-pre-written and remains fixed within the round. All compared methods use the
-same backend-specific applicability mask.
+pre-written and remains fixed within the round. Random Mutation, Unguided LLM,
+LLM-as-Judge, Coverage-Guided, and full \system use the same full-space
+backend-specific applicability mask. U-Fuzz-Q and U-Fuzz-M restrict that mask
+to query and memory-state mutations, respectively.
 
 An opportunity is \textsc{inapplicable} when the operator and target cannot
 be used faithfully for the seed and backend. It is excluded from
@@ -189,6 +190,17 @@ least one valid executed mutant. Diagnostic obligation coverage is
 \label{eq:mutation-coverage}
 \end{equation}
 Invalid candidates do not cover an obligation.
+
+\paragraph{Compared search methods.}
+Random Mutation selects uniformly among applicable obligations. Unguided LLM
+uses an LLM to choose among the same obligations and realize the selected
+mutation without retrieval feedback. LLM-as-Judge ranks valid candidates by
+their estimated likelihood of exposing a memory-use fault, without evaluator
+references, failure labels, oracle verdicts, or retrieval feedback.
+Coverage-Guided uses only observed new-memory-entry coverage. Full \system
+uses that coverage component together with retrieval-pattern novelty and, for
+meaning-preserving mutations, ranked retrieval divergence. The candidate-pool
+size and judging cost for LLM-as-Judge are frozen after the pilot.
 
 \paragraph{Validation.}
 Every candidate is validated before execution using its QueryIntent,
@@ -215,13 +227,12 @@ or a parent execution is logged as overhead rather than silently reused or
 silently charged as a mutant probe. The same reconstruction and accounting
 protocol is used by all methods.
 
-One campaign is the product of one original checkpoint \(M_i\), one backend
-\(b\), one method \(h\), and one repetition seed \(s\). Its budget \(B\) counts
-valid new mutant executions only. Shared initialization, invalid generation,
-inapplicable opportunities, reconstruction, and separately required parent
-executions do not consume \(B\); their costs are logged separately. Thus, a
-fixed method/backend/repetition condition over \(N\) checkpoints performs
-\(N B\) valid new mutant executions.
+One campaign is the product of one benchmark corpus, one backend \(b\), one
+method \(h\), and one repetition seed \(s\). Its total budget \(B\) counts
+valid new mutant executions across the complete eligible seed corpus. Shared
+initialization, invalid generation, inapplicable opportunities,
+reconstruction, and separately required parent executions do not consume
+\(B\); their costs are logged separately.
 
 \paragraph{Failure detection.}
 After execution, the evaluator may use \(G(x)\), \(G(x')\), retrieval
@@ -236,11 +247,41 @@ F_o(x,x')=
 \end{equation}
 This evaluator runs outside fuzzing search. Its verdict cannot affect seed
 retention, scheduling, retries, or search values. The executable definitions
-of \(\mathcal{C}_o\) and answer matching, and the rule for deduplicating
-distinct failures in \(\mathrm{Fail}@B\), remain to be specified before the
-full evaluation.
+of \(\mathcal{C}_o\), retrieval correctness, and answer matching remain to be
+specified before the full evaluation.
 
-\paragraph{Canonical regions.}
+We operationalize fault uniqueness using a canonical semantic fault signature
+rather than attempting to infer latent implementation root causes. For every
+evaluator-confirmed fault, define
+\begin{equation}
+\operatorname{CFS}(x,x')=(i_0,o_c,\operatorname{QI}_c(q'),t_c,s_f),
+\label{eq:cfs}
+\end{equation}
+where \(i_0\) is the original benchmark checkpoint from which the seed lineage
+descends, \(o_c\) is the canonical mutation relation,
+\(\operatorname{QI}_c(q')\) is the normalized certified QueryIntent of the
+mutant, \(t_c\) is the canonical semantic mutation target, and
+\(s_f\in\{\mathrm{R},\mathrm{A},\mathrm{RA}\}\) is the mutually exclusive
+retrieval-only, answer/use-only, or combined failure surface. Failure-surface
+classification is evaluator-only.
+
+Two failures are identical for UF only when their complete CFS values match.
+Within one campaign,
+\begin{equation}
+\operatorname{UF}@B=
+\left|\left\{\operatorname{CFS}(x_t,x'_t):1\leq t\leq B
+\land F_{o_t}(x_t,x'_t)=1\right\}\right|.
+\label{eq:uf-at-b}
+\end{equation}
+Deduplication is performed independently in each repetition. Raw witnesses are
+retained for every CFS; primary reporting aggregates per-run UF@B values and
+does not union signatures across repetitions. Appendix~\ref{app:fault-signature}
+specifies operator-specific target normalization and excluded witness fields.
+The CFS schema and equality rule over canonicalized values are fixed.
+Executable construction of canonical CFS values depends on the separately
+frozen normalization procedure and evaluator predicates.
+
+\paragraph{Canonical structural regions.}
 For a canonical fact with certified entity and relation, define
 \[
 \kappa(f)=(\texttt{entity-relation},\operatorname{norm}(e),
@@ -259,17 +300,6 @@ K_i(p), & K_i(p)\neq\varnothing,\\
 Thus, a source contributes a fallback region only when it yields no certified
 entity--relation region. Residual unstructured text does not create a second
 region for a source that already has a semantic key.
-
-For original checkpoint \(M_i\), the frozen campaign universe is
-\begin{equation}
-U_i:=U(M_i)=
-\bigcup_{p\in\mathcal{P}_i}\operatorname{RegionsForSource}_i(p).
-\label{eq:region-universe}
-\end{equation}
-Descendant states do not define new universes. Update changes state within an
-existing region, deletion may deactivate content while its region remains in
-\(U_i\), and an unrelated change modifies another existing region. No valid
-memory-state mutation creates a region outside \(U_i\).
 
 For a retrieved backend entry \(m\), the adapter first constructs a certified
 fact-level mapping
@@ -291,97 +321,80 @@ R^{\mathrm{fallback}}_{b,i}(m)=
 We then define
 \[
 \rho_{b,i}(m)=R^{\mathrm{sem}}_{b,i}(m)\cup
-R^{\mathrm{fallback}}_{b,i}(m)\subseteq U_i.
+R^{\mathrm{fallback}}_{b,i}(m).
 \]
 When a source has no certified semantic key, reliable source provenance may
 map the entry to its source fallback. When it has exactly one semantic key,
 reliable source provenance suffices for that key. When it has several keys,
 the entry maps only to facts that its content and provenance reliably
 identify. An entry that cannot be disambiguated is marked ambiguous or
-unmapped for coverage rather than assigned every key of its source. A
+unmapped rather than assigned every key of its source. A
 summarized entry may still map to several regions when it reliably represents
 several certified facts. Mutation-generated values inherit their designated
-target's key. Thus, coverage counts regions represented in the retrieved
-entry, not every region present in its source unit. For ranked retrieval
-\(R_k\), define
-\[
-\operatorname{Regions}_i(R_k)=
-\bigcup_{m\in R_k}\rho_{b,i}(m).
-\]
+target's key. These definitions support mutation construction, validation,
+unrelatedness checks, deletion certification, provenance auditing, and backend
+capability analysis. They do not define or qualify \(\mathrm{Cov}@B\).
 
 \paragraph{Retrieval-mapping quality.}
-Because ambiguous and unmapped entries are conservatively excluded from
-region coverage, we report
+As an internal provenance diagnostic, we may compute
 \[
 \operatorname{MappingRate}=
 \frac{|\{m:\rho_{b,i}(m)\neq\varnothing\}|}
 {|\{m:m\text{ is a retrieved entry considered}\}|}.
 \]
-We also report mapped, ambiguous, and unmapped entry counts by
-backend/benchmark condition and optionally by method as a sanity check. This
-diagnostic does not guide scheduling, retention, or mutation selection; it
-does not enter either part of the RegionCov fraction; and it is not a primary
-RQ1 effectiveness metric.
+Mapped, ambiguous, and unmapped counts may also be retained. MappingRate does
+not guide scheduling and is not needed to interpret primary memory-entry
+coverage.
 
-\paragraph{Online search feedback.}
-Let \(C_{t-1}^{\mathrm{online}}\) contain only regions observed during shared
-initialization and earlier valid probes in the campaign. For a probe executed
-on its actual state \(M_{i,t}\), let
-\[
-R_t=\operatorname{Regions}_i(R_k(q_t,M_{i,t})).
-\]
-Online coverage gain is
-\begin{equation}
-R_{\mathrm{cov},t}=
-\frac{|R_t\setminus C_{t-1}^{\mathrm{online}}|}
-{\max(1,|R_t|)},
-\qquad
-C_t^{\mathrm{online}}=C_{t-1}^{\mathrm{online}}\cup R_t.
-\label{eq:online-region-gain}
-\end{equation}
-The scheduler may also use retrieval-pattern novelty and, for
-meaning-preserving mutations, ranked retrieval divergence. It never receives
-the complete \(U_i\), its denominator, unseen-region targets, or evaluator
-information.
+\paragraph{Initialized memory-entry coverage.}
+After entry-level initialization equivalence is established, each method
+campaign freezes its own set \(E_0\) of initialized retrievable entries and
+assigns opaque local coverage IDs. \(E_0\) is the disjoint union over eligible
+checkpoint states: equal content in different checkpoints remains distinct.
+Entries have the same object granularity returned by the selected public
+retrieval API. Storage enumeration alone is insufficient to admit an object to
+\(E_0\).
 
-\paragraph{Offline region coverage.}
-Let \(\mathcal{S}_0^{(i)}\) be the original benchmark query set for \(M_i\).
-For backend \(b\) and repetition seed \(s\), shared initial coverage is
+The reached set starts empty, \(C_0=\varnothing\). For valid fuzzing execution
+\(t\), let \(R_t\) be its retrieval and let
+\(\operatorname{CoverageIDs}(R_t)\) be the initialized entries represented by
+the retrieved physical objects. We update
 \begin{equation}
-C_0^{(i,b,s)}=
-\bigcup_{q\in\mathcal{S}_0^{(i)}}
-\operatorname{Regions}_i(R_k(q,M_i)).
-\label{eq:initial-region-coverage}
-\end{equation}
-These initialization executions do not consume \(B\). For method \(h\), let
-\(x_j=(M_{i,j},q_j)\), \(1\leq j\leq B\), be its valid new mutant executions
-in this checkpoint-level campaign. Then
-\begin{equation}
-C_B^{(i,b,h,s)}=C_0^{(i,b,s)}\cup
-\bigcup_{j=1}^{B}
-\operatorname{Regions}_i(R_k(q_j,M_{i,j})).
-\label{eq:campaign-regions}
-\end{equation}
-Because all mappings are anchored, \(C_B^{(i,b,h,s)}\subseteq U_i\). We
-define
-\begin{equation}
-\operatorname{RegionCov}_{i,b,h,s}@B=
-\frac{|C_B^{(i,b,h,s)}|}{|U_i|},
+C_t=C_{t-1}\cup\operatorname{CoverageIDs}(R_t),
 \qquad
-\Delta\operatorname{RegionCov}_{i,b,h,s}@B=
-\frac{|C_B^{(i,b,h,s)}|-|C_0^{(i,b,s)}|}{|U_i|}.
-\label{eq:region-coverage}
+\operatorname{Cov}@B=\frac{|C_B|}{|E_0|}.
+\label{eq:entry-coverage}
 \end{equation}
-For fixed \(b,h,s\), primary aggregation across \(N\) checkpoints is the
-macro-average
+Initialization queries and parent observations neither consume \(B\) nor add
+to \(C_0\). An in-place or replacement update retains the designated target's
+coverage ID; deletion leaves that ID in \(E_0\) without counting the deletion
+as retrieval; and an unrelated change remains associated with its selected
+initialized target. An uncertifiable split, merge, or replacement makes that
+mutation opportunity \textsc{inapplicable}. Failure to establish \(E_0\) at
+retrieval-returnable granularity blocks Cov@B for the condition.
+If the complete verified campaign-level inventory is empty, \(|E_0|=0\), the
+backend--benchmark condition is RQ1-ineligible: Cov@B is undefined, UF@B is not
+reported, and no numeric 0 or 1 is fabricated. An individual empty checkpoint
+does not exclude a campaign whose campaign-level \(E_0\) is non-empty.
+
+\paragraph{Coverage feedback.}
+Coverage-Guided starts with an empty \(\mathrm{seen}\) set and scores execution
+\(t\) by
 \begin{equation}
-\operatorname{RegionCov}_{b,h,s}@B=
-\frac{1}{N}\sum_{i=1}^{N}\operatorname{RegionCov}_{i,b,h,s}@B,
-\label{eq:macro-region-coverage}
+|\operatorname{CoverageIDs}(R_t)\setminus\mathrm{seen}|,
+\qquad
+\mathrm{seen}\leftarrow\mathrm{seen}\cup
+\operatorname{CoverageIDs}(R_t).
+\label{eq:coverage-guided-score}
 \end{equation}
-with the analogous definition for
-\(\Delta\operatorname{RegionCov}@B\). A pooled result may be reported only as
-a secondary diagnostic. The numerical budget, retrieval depth, retry cap,
-repetition count, extraction model and version, normalization algorithm, and
-manual-audit sample size are selected after the pilot and frozen before full
-evaluation.
+It uses no other feedback. \system uses the same observed new-entry concept in
+place of canonical-region gain, while retaining its separate retrieval-pattern
+novelty and meaning-preserving ranked-divergence components. No search method
+receives evaluator-only information.
+
+Primary results are reported separately for LoCoMo and LongMemEval-S. Each
+benchmark--backend--method cell aggregates repetitions over seeds. The
+numerical budget, retrieval depth, retry cap, repetition count, uncertainty
+statistic, LLM-as-Judge candidate-pool and judging cost, extraction model and
+version, normalization algorithm, and manual-audit sample size are selected
+after the pilot and frozen before full evaluation.

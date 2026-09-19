@@ -31,48 +31,49 @@ Methods:
 
 - Random Mutation
 - Unguided LLM Mutation
+- LLM-as-Judge
+- Coverage-Guided
 - U-Fuzz
 
-Within each backend/benchmark condition, all methods use the same initial
-seeds, frozen structural indexes, mutation operators and targets, backend
-applicability masks, validators, and valid-execution budget. Only their search
-and selection strategies differ.
+These five primary methods use the same benchmark seed corpus, eligible
+checkpoint set, frozen structural indexes, full mutation operators and targets,
+backend applicability masks, validators, generation-attempt limits, eligibility
+for valid executed mutants to become later seeds, and valid-execution budget.
+Only their search and selection strategies differ. U-Fuzz-Q and U-Fuzz-M are
+restricted ablations: U-Fuzz-Q uses only query mutations, U-Fuzz-M uses only
+memory-state mutations, and full U-Fuzz uses both classes. The restricted
+ablations are not part of the same-full-space fairness comparison.
 
 ## Fuzzing campaign and budget
 
 One evaluated fuzzing campaign is:
 
-    one original checkpoint M_i
+    one benchmark corpus d
     x one backend b
     x one method h
     x one repetition seed s
 
-Each campaign receives exactly B valid new mutant executions. Thus, B is a
-per-checkpoint campaign budget of valid mutant executions, not a global budget
-shared across checkpoints.
+Each campaign starts from the complete eligible benchmark seed corpus and
+receives exactly B valid new mutant executions across that corpus. B is a total
+per-campaign budget, not a budget allocated independently to each checkpoint.
 
-For a fixed checkpoint M_i, backend b, and repetition seed s, the backend
-checkpoint is constructed once. Random Mutation, Unguided LLM Mutation, and
-U-Fuzz preferably start from exact clones of that state. If exact cloning is
-unavailable, every method replays the same frozen initialization artifact with
-all controllable randomness, model versions, prompts, decoding settings, and
-ingestion configuration fixed. Identical replay input alone is not evidence of
-equivalent initialized state. Before method-specific fuzzing, perform an
-initialization-equivalence check and record a stable state identity,
-fingerprint, or canonical state projection sufficient to establish equivalent
-starting states. The exact fingerprinting procedure is deferred to the backend
-capability-test phase.
+For a fixed benchmark, backend, and repetition seed, every method initializes
+all eligible checkpoint states under the same frozen initialization protocol.
+Exact state cloning is preferred. If cloning is unavailable, every method
+replays the same frozen initialization artifacts with all controllable
+randomness, model versions, prompts, decoding settings, and ingestion
+configuration fixed. Identical replay input alone is not evidence of equivalent
+initialized state. Before method-specific fuzzing, compare the observable
+multiset of retrievable-entry projections for every checkpoint state. The exact
+backend-specific projection is finalized during capability testing.
 
 If initialization equivalence cannot be established, record an initialization
 or capability failure and exclude that condition from the paired RQ1
-comparison until it is resolved. Once equivalence is established, the original
-benchmark queries and all required parent baseline observations are executed
-during shared initialization. Their coverage is denoted:
-
-    C_0^(i,b,s)
-
-C_0 does not have a method index because it is shared across methods. Method-
-specific fuzzing begins only after shared initialization.
+comparison until it is resolved. Equivalent states need not share backend UUIDs
+or global coverage-entry IDs. Each method campaign assigns its own opaque IDs
+to its own initialized retrievable entries. Once equivalence is established,
+the original benchmark queries and all required parent baseline observations
+are executed during initialization. Method-specific fuzzing begins afterward.
 
 Budget accounting is:
 
@@ -82,7 +83,8 @@ Budget accounting is:
 
 Initialization executions do not consume B. Invalid candidates may be retried
 under a generation-attempt cap selected after the pilot and frozen before the
-full evaluation.
+full evaluation. Initialization retrievals do not contribute to Cov@B and do
+not populate the Coverage-Guided seen-entry set.
 
 Every selected parent must already have an observation for its exact state and
 query identity. Initial parent observations come from shared initialization.
@@ -98,9 +100,8 @@ proven identical. If identity cannot be proven, reconstruction or parent
 execution overhead is recorded separately and the same protocol is applied to
 all methods. This overhead does not silently enter or disappear from B.
 
-For N checkpoints, a fixed method/backend/repetition condition therefore uses
-N*B valid new mutant executions, plus separately logged initialization and
-reconstruction overhead.
+A campaign therefore uses B valid new mutant executions in total, plus
+separately logged initialization and reconstruction overhead.
 
 ## Seed and one-input invariant
 
@@ -177,12 +178,10 @@ does not by itself constitute evaluator leakage. The preferred flow is:
         -> Scheduler
 
 The scheduler normally operates on the frozen obligation projection rather
-than enumerating the full index. This is an architecture choice. Independently,
-the scheduler must not use the complete region universe, its size, or a list of
-unseen regions as search guidance.
+than enumerating the full index. This is an architecture choice.
 
-The same frozen index is used by all methods in a backend/checkpoint/
-repetition condition.
+The same frozen index for each eligible checkpoint is used by all methods in a
+backend/benchmark/repetition condition.
 
 ## Partial-but-certified extraction
 
@@ -256,7 +255,7 @@ Evaluator-only information includes:
 - stale, current, and deleted correctness annotations;
 - unsupported expected answer bottom;
 - failure and answer predicates;
-- confirmed failure verdicts and Fail@B results.
+- confirmed failure verdicts and UF@B results.
 
 These values must not affect mutation selection, seed retention, scheduling,
 search feedback, or search-value computation. The scheduler must not import
@@ -264,8 +263,9 @@ or query the ReferenceVault.
 
 Search-side information may include seed identity, QueryIntent fields required
 for mutation, operators and concrete targets, applicability, construction
-provenance, backend retrieval output, reached canonical regions, online
-retrieval divergence, online coverage gain, and retrieval-pattern novelty.
+provenance, backend retrieval output, campaign-local coverage-entry IDs, online
+retrieval divergence, observed new-entry coverage, and retrieval-pattern
+novelty.
 
 ## Mutation obligations
 
@@ -343,23 +343,42 @@ candidate.
 ## Backend applicability mask
 
 For every seed, operator, target, and backend, record a frozen applicability
-status and exclusion reason. All three methods receive the same applicability
-mask in a backend/checkpoint/repetition condition.
+status and exclusion reason. The five primary methods receive the same full-
+space applicability mask in a backend/benchmark/repetition condition. U-Fuzz-Q
+and U-Fuzz-M receive the corresponding query-only and memory-only restrictions.
 
 Report total structurally enumerated opportunities, applicable opportunities,
 backend-specific exclusions by reason, invalid-generation counts, and valid-
 execution counts. Unsupported backend behavior must not be silently emulated.
 
-## Canonical regions and source fallback
+## Search methods and restricted ablations
 
-For a fact with certified entity and relation, define its semantic key as:
+Random Mutation uniformly selects among applicable obligations. Unguided LLM
+uses an LLM to choose among the same applicable obligations and realize the
+chosen mutation without retrieval feedback; it may not leave the shared
+applicable space. LLM-as-Judge ranks valid candidates by their estimated
+likelihood of exposing a memory-use fault, without gold answers, evaluator
+references, failure labels, oracle verdicts, or retrieval feedback. Its
+candidate-pool size and judging cost are fixed after the pilot.
+
+Coverage-Guided uses only the memory-entry coverage signal defined below.
+U-Fuzz uses observed new-memory-entry coverage together with its approved
+retrieval-pattern novelty and, for meaning-preserving mutations, ranked
+retrieval divergence. U-Fuzz-Q and U-Fuzz-M apply the same U-Fuzz strategy to
+the query-only and memory-only operator subsets, respectively.
+
+## Canonical structural regions and provenance mapping
+
+For a fact with certified entity and relation, define its structural key as:
 
     kappa(f) =
         ("entity-relation", norm(e), norm(r))
 
 Facts with different values or times for the same certified entity-relation
-pair belong to the same logical region. The normalization procedure is
-selected after the pilot and frozen before full evaluation.
+pair belong to the same structural region. Backend-generated memory, note,
+node, edge, episode, or other replay-unstable IDs are not canonical structural
+keys. The normalization procedure is selected after the pilot and frozen
+before full evaluation.
 
 For each stable source unit p, define:
 
@@ -368,183 +387,192 @@ For each stable source unit p, define:
          f has provenance p
          and has a certified entity-relation key}
 
-and:
+and use ("source", p) as a conservative fallback only when K_i(p) is empty.
+Residual unstructured text does not create an additional fallback for a source
+that already has a certified semantic key.
 
-    RegionsForSource_i(p) =
-        K_i(p)                         if K_i(p) is non-empty
-        {("source", p)}                otherwise
-
-A source that yields at least one certified semantic region contributes only
-those semantic regions. Residual unstructured text from that source does not
-create an additional source fallback. A source fallback is used only when the
-source yields no certified entity-relation region. Semantic regions are never
-invented for uncertified material.
-
-For original checkpoint M_i, define the frozen campaign universe once:
-
-    U_i := U(M_i)
-         = union over checkpoint source units p
-           of RegionsForSource_i(p)
-
-Descendant states do not define new region universes. Every descendant state
-is evaluated against U_i. Update changes a value within an existing region;
-deletion may deactivate its content while the region remains in U_i; and
-Unrelated Change modifies an existing unrelated region. No valid memory-state
-mutation may create a region outside U_i.
-
-Backend-generated memory, note, node, edge, episode, or other replay-unstable
-IDs must not be canonical region keys.
-
-## Retrieval-to-region mapping
-
-For every probe derived from M_i, including a probe on a descendant state, the
-adapter resolves backend-local provenance to the original checkpoint sources.
-For retrieved entry m, define a certified fact-level mapping:
+For a retrieved entry m, define:
 
     FactMap_{b,i}(m) =
         {canonical facts that m can reliably be shown to represent}
 
-Define the semantic region set:
-
     R_sem_{b,i}(m) =
         {kappa(f) : f in FactMap_{b,i}(m)}
-
-Separately define:
 
     R_fallback_{b,i}(m) =
         {("source", p) :
          m has reliable provenance to p
          and K_i(p) is empty}
 
-The source fallback is not represented through FactMap. Define:
-
     rho_{b,i}(m) =
         R_sem_{b,i}(m) union R_fallback_{b,i}(m)
 
-subject to these conservative rules:
+For a source with one semantic region, reliable provenance may establish that
+mapping. For a source with multiple semantic regions, map only the facts that
+the entry reliably represents; otherwise mark the semantic mapping ambiguous
+or unmapped. Never assign every region merely from source provenance.
 
-- If source p has no certified semantic region, reliable provenance to p may
-  map m to ("source", p).
-- If p has exactly one certified semantic region, reliable provenance to p is
-  sufficient to map m to that region.
-- If p has multiple certified semantic regions and m reliably identifies a
-  subset of their canonical facts, map only that subset.
-- If p has multiple certified semantic regions and m cannot be reliably
-  disambiguated to particular facts, mark it ambiguous/unmapped for RegionCov.
-  Do not assign every region in K_i(p).
+Canonical regions, FactMap, semantic/fallback mapping, and MappingQuality are
+structural infrastructure for mutation construction and validation,
+unrelatedness checks, deletion certification, provenance auditing, and backend
+capability analysis. They do not define, qualify, or enter Cov@B. MappingRate
+may be retained as an internal provenance-mapping diagnostic, but it is not
+required to interpret Cov@B and cannot guide search.
 
-One entry may map to multiple regions when the entry itself reliably
-represents multiple certified facts. Mutation-generated values inherit the
-region of their designated target. If no reliable checkpoint provenance
-exists, record the entry as unmapped rather than inventing a region.
+## Initial retrievable-entry inventory and identity
 
-Thus:
+For each method campaign, initialize all eligible checkpoint states and first
+establish entry-level equivalence against the shared initialization condition.
+Equivalence compares the observable multiset of retrievable-entry projections,
+not backend UUIDs. Each method then freezes its own initialized retrievable-
+entry set E_0 and assigns opaque campaign-local coverage IDs.
 
-    rho_{b,i}(m) subseteq U_i
+Coverage entries are checkpoint-local. E_0 is the disjoint union of the
+initialized retrievable entries from all eligible checkpoint states. Similar
+or identical content in different checkpoints remains distinct. A coverage
+entry must have the same backend object granularity that the selected public
+retrieval API can return: memory records for Mem0, memory notes for A-Mem, and
+fact/edge objects for Graphiti. Storage enumeration alone does not establish
+retrieval eligibility. If the backend cannot establish E_0 at this granularity,
+Cov@B for that backend/benchmark condition is a capability blocker.
+If the complete verified campaign-level inventory is empty, |E_0| = 0, the
+backend x benchmark condition is RQ1-ineligible. Cov@B is undefined, UF@B is
+not reported, and no numeric 0 or 1 is fabricated. Record the condition as a
+capability/ineligibility result. An individual checkpoint with no retrievable
+entry does not exclude a campaign whose campaign-level E_0 is non-empty.
 
-RegionCov counts regions represented in the retrieved entry, not every region
-present in its source unit.
+An in-place update retains the target entry's coverage ID. A replacement or
+later physical record created for an update inherits the designated target's
+coverage ID. Deletion does not remove the target from E_0 and does not itself
+count as retrieval. Unrelated Change remains associated with its selected
+initialized target. No valid memory-state mutation creates a coverage ID
+outside E_0. If a particular split, merge, or replacement cannot be certified
+against its initialized target, that mutation opportunity is INAPPLICABLE; it
+does not automatically exclude the complete backend/benchmark condition.
 
-For ranked retrieval R_k, define:
+## Cov@B
 
-    Regions_i(R_k) =
-        union over m in R_k of rho_{b,i}(m)
+For a campaign identified by benchmark d, backend b, method h, and repetition
+seed s, initialize the reached-entry set as:
 
-## Retrieval-mapping quality diagnostic
+    C_0 = empty set
 
-Because ambiguous and unmapped entries are conservatively excluded from
-RegionCov, report:
+For valid fuzzing execution t, let R_t be its ranked retrieval result and let
+CoverageIDs(R_t) contain the initialized coverage IDs represented by its
+retrieved physical entries. Define:
 
-    MappingRate =
-        number of retrieved entries with non-empty rho
-        ------------------------------------------------
-        total number of retrieved entries considered
+    C_t = C_{t-1} union CoverageIDs(R_t)
 
-Also log the counts of mapped entries, ambiguous entries, and unmapped entries.
-Report MappingRate by backend/benchmark condition and optionally by method as a
-sanity check.
+After B valid fuzzing executions:
 
-MappingRate is diagnostic only. It does not guide scheduling, seed retention,
-or mutation selection; it does not enter the RegionCov numerator or
-denominator; and it is not a primary RQ1 effectiveness metric. Its purpose is
-to distinguish low observed region coverage from limited retrieval-to-region
-observability.
+    Cov@B = |C_B| / |E_0|
 
-## Online coverage signal
+Original benchmark-query executions and parent-observation construction do not
+consume B, contribute to C_0, or populate any online coverage seen set. Thus
+Cov@B is in [0,1]. Because backends expose different entry granularities,
+absolute Cov@B values are interpreted primarily within the same backend.
 
-Let C_{t-1}^online contain only regions observed through shared initialization
-and prior valid probes in the campaign. For a probe executed on its actual
-state M_{i,t}, let:
+## Coverage-guided and U-Fuzz coverage feedback
 
-    R_t = Regions_i(R_k(q_t, M_{i,t}))
+Coverage-Guided starts with an empty seen set. After valid mutant execution t:
 
-Then:
+    new_entries = CoverageIDs(R_t) \ seen
+    coverage_score = |new_entries|
+    seen = seen union CoverageIDs(R_t)
 
-    R_cov,t =
-        |R_t \ C_{t-1}^online|
-        -----------------------
-        max(1, |R_t|)
+It uses only this signal. It cannot use canonical-region coverage, retrieval
+divergence, retrieval-pattern novelty, evaluator references, gold answers,
+failure labels, or oracle verdicts. Its queue, retention, and tie-breaking
+rules are fixed during baseline implementation.
 
-    C_t^online = C_{t-1}^online union R_t
+U-Fuzz replaces its former canonical-region coverage-gain component with the
+same observed new-memory-entry concept. Retrieval-pattern novelty and ranked
+retrieval divergence remain separate U-Fuzz feedback components and receive no
+evaluator-only information.
 
-This online signal uses only observed regions. It does not use U_i, |U_i|,
-gold answers, evaluator evidence, or failure labels.
+## UF@B
 
-## Offline RegionCov@B
+We operationalize fault uniqueness using canonical semantic fault signatures
+rather than attempting to infer latent implementation root causes. For every
+evaluator-confirmed failing execution, define:
 
-For fixed checkpoint M_i, backend b, and repetition seed s, let S_0^(i) be
-the associated original benchmark query set. Shared initial coverage is:
+    CFS =
+        (root_checkpoint_id,
+         mutation_relation,
+         canonical_query_intent,
+         canonical_mutation_target,
+         failure_surface)
 
-    C_0^(i,b,s) =
-        union over q in S_0^(i)
-        of Regions_i(R_k(q, M_i))
+Two confirmed failures are the same unique fault if and only if their complete
+CFS values are identical. For one campaign:
 
-These initialization executions do not consume B.
+    UF@B =
+        |{CFS(x_t, x'_t) :
+            1 <= t <= B
+            and execution t is evaluator-confirmed as a fault}|
 
-For method h, let its B valid new mutant executions be:
+The root checkpoint ID is the original benchmark checkpoint from which the
+seed lineage descends. It is not a descendant state ID, replay state ID,
+backend UUID, or execution number.
 
-    x_j = (M_{i,j}, q_j),  1 <= j <= B
+The canonical mutation relations are Meaning-Preserving Query,
+Target-Changing Query, Unsupported Query, Update, Deletion, and Unrelated
+Change. Paraphrase, shortening, nonrestrictive-context addition, and
+syntactic-form change all normalize to Meaning-Preserving Query.
 
-where M_{i,j} is the actual original or descendant state used for mutant j.
-Define:
+The canonical query intent is the normalized and certified QueryIntent of the
+mutant query: entity, relation or attribute, temporal scope, answer-affecting
+constraints, and checkpoint-relative answerability. Raw query wording is not
+part of the signature.
 
-    C_B^(i,b,h,s) =
-        C_0^(i,b,s)
-        union
-        union over j = 1..B
-        of Regions_i(R_k(q_j, M_{i,j}))
+The canonical mutation target is operator-specific:
 
-Because every retrieval mapping is anchored to U_i:
+- Meaning-Preserving Query: EMPTY.
+- Target-Changing Query: designated changed slot plus canonical replacement.
+- Unsupported Query: designated changed slot or requested unsupported target,
+  represented canonically.
+- Update: canonical entity-relation target, including temporal scope when
+  structurally relevant. The replacement value is excluded.
+- Deletion: canonical semantic deletion target, including entity, relation or
+  attribute, value, and temporally relevant scope. Stable provenance, duplicate
+  source copies, and backend physical IDs do not distinguish the UF signature
+  when they represent the same semantic deletion target.
+- Unrelated Change: canonical unrelated entity-relation target, including
+  temporal scope when structurally relevant. The replacement value is excluded.
 
-    C_B^(i,b,h,s) subseteq U_i
+The mutually exclusive failure surfaces are R for retrieval-side failure only,
+A for answer/use-side failure only, and RA for both. Failure-surface
+classification is evaluator-only and must not affect mutation selection,
+scheduling, retention, or search feedback. The executable C_o, retrieval-side,
+and Ans predicates remain unresolved until the evaluator specification is
+finalized.
 
-The per-campaign metrics are:
+The primary CFS excludes raw query or paraphrase wording, exact response text,
+backend or retrieval-entry UUIDs, exact retrieval-rank perturbations, concrete
+update or unrelated-change replacement values, random seeds, execution indices,
+scheduling paths, descendant state IDs, repetition IDs, and method names. These
+values may be retained only in raw witness records. Every CFS retains all of its
+confirmed failing executions as witnesses, while UF@B counts that CFS once.
 
-    RegionCov_(i,b,h,s)@B =
-        |C_B^(i,b,h,s)|
-        -----------------
-        |U_i|
+Deduplication occurs independently within each campaign and repetition.
+Primary reporting aggregates the resulting per-run UF@B values; it does not
+union CFS values across repetitions. A cross-repetition CFS union may be
+reported only as a secondary corpus-discovery diagnostic. Thus, “unique fault”
+means unique under this declared CFS equivalence relation.
 
-    DeltaRegionCov_(i,b,h,s)@B =
-        |C_B^(i,b,h,s)| - |C_0^(i,b,s)|
-        ---------------------------------
-        |U_i|
+The CFS field schema, operator-specific target semantics, excluded fields,
+equality rule over canonicalized CFS values, per-repetition deduplication, and
+witness retention are fixed. Executable construction of canonical CFS values
+depends on the separately frozen entity/relation/time/constraint normalization
+procedure and evaluator predicates, which must be fixed before RQ1 execution.
 
-For fixed backend b, method h, and repetition seed s, primary aggregation
-across N checkpoint campaigns is:
+## Reporting across repetitions
 
-    RegionCov_(b,h,s)@B =
-        (1/N) * sum_i RegionCov_(i,b,h,s)@B
-
-and analogously for DeltaRegionCov@B. A pooled or micro result may be reported
-only as a secondary diagnostic.
-
-## Fail@B
-
-Fail@B reports confirmed memory-use failures found within the same B valid new
-mutant executions. Evaluation occurs offline through the ReferenceVault and
-cannot influence search. The rule for deduplicating distinct failures remains
-intentionally unspecified until it is separately approved.
+Primary RQ1 results remain separated by benchmark. For each benchmark x
+backend x method cell, aggregate repeated campaign results over repetition
+seeds. Do not pool LoCoMo and LongMemEval-S into one primary result. The number
+of repetitions and uncertainty statistic are selected after the pilot and
+frozen before full evaluation.
 
 ## Manual audit
 
@@ -557,9 +585,9 @@ deletion applicability, and Unrelated Change validity.
 
 Report the sampling procedure, sample counts, exclusion reasons, and empirical
 metadata, mutation validity, and retrieval-mapping accuracy rates. Report
-MappingRate and mapped, ambiguous, and unmapped entry counts separately from
-the primary effectiveness metrics. The audit is quality control rather than
-the primary construction mechanism.
+MappingRate and mapped, ambiguous, and unmapped fact/provenance-mapping counts
+only as internal quality diagnostics. They neither define nor qualify Cov@B.
+The audit is quality control rather than the primary construction mechanism.
 
 ## Information-flow regression test
 
@@ -579,6 +607,8 @@ before full evaluation:
 - retrieval depth top-k;
 - generation retry cap;
 - repetition count;
+- uncertainty statistic;
+- LLM-as-Judge candidate-pool size and judging cost;
 - extraction model and version;
 - entity/relation normalization algorithm;
 - manual-audit sample size.
@@ -586,7 +616,7 @@ before full evaluation:
 The following methodological definitions will be specified separately before
 full evaluation:
 
-- the deduplication rule for distinct failures in Fail@B;
-- the executable evaluator predicates C_o and Ans.
+- the executable evaluator predicates C_o and Ans, including retrieval-side
+  and answer/use-side correctness.
 
 No implementation may invent these parameters or definitions implicitly.

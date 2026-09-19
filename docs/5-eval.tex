@@ -1,0 +1,134 @@
+\section{Experiment}
+\label{sec:experiments}
+
+We evaluate \system on three open-source persistent-memory systems:
+Mem0~\citep{chhikara2025mem0}, A-Mem~\citep{xu2025amem}, and
+Graphiti~\citep{rasmussen2025zep}. We use
+LoCoMo~\citep{maharana2024evaluating} and
+LongMemEval-S~\citep{wu2024longmemeval} as benchmark seed corpora. Results are
+reported separately by benchmark and backend, with repeated campaigns
+aggregated over repetition seeds.
+
+\paragraph{Metrics.}
+UF@B counts distinct canonical semantic fault signatures among evaluator-
+confirmed failures in the first \(B\) valid fuzzing executions. The CFS schema
+and equivalence rule are fixed; executable canonicalization and failure-surface
+assignment depend on the separately frozen normalization and evaluator
+predicates. Cov@B is the fraction of the frozen initialized retrievable memory
+entries reached during those \(B\) executions. Coverage starts empty and
+initialization retrievals receive no credit. A backend--benchmark condition
+with an empty campaign-level inventory is RQ1-ineligible: Cov@B is undefined
+and UF@B is not reported. An individual empty checkpoint does not exclude a
+campaign whose campaign-level inventory is non-empty.
+
+\subsection{RQ1: How effective is U-Fuzz at memory-use failure discovery?}
+\label{subsec:rq1}
+
+We compare full \system with four same-space baselines: Random Mutation,
+Unguided LLM, LLM-as-Judge, and Coverage-Guided. These methods share the
+benchmark seed corpus, eligible checkpoint set, backend initialization
+protocol, full applicable mutation space, validation procedure, generation-
+attempt limits, execution budget, and seed-retention eligibility. We also
+evaluate U-Fuzz-Q and U-Fuzz-M as restricted query-only and memory-only
+ablations.
+
+\begin{table}[t]
+\centering
+\caption{
+Fuzzing effectiveness under a fixed execution budget \(B\).
+UF@\(B\) is the number of unique confirmed faults, and Cov@\(B\)
+is memory-entry coverage.
+}
+\label{tab:rq1}
+
+\renewcommand{\arraystretch}{1.02}
+\setlength{\tabcolsep}{3.5pt}
+
+\begin{minipage}{0.8\linewidth}
+\centering
+\begin{tabularx}{\linewidth}{
+    >{\raggedright\arraybackslash}p{0.25\linewidth}
+    *{6}{>{\centering\arraybackslash}X}
+}
+\toprule
+\textbf{Method}
+& \multicolumn{2}{c}{\textbf{Mem0}}
+& \multicolumn{2}{c}{\textbf{A-Mem}}
+& \multicolumn{2}{c}{\textbf{Graphiti}} \\
+\cmidrule(lr){2-3}
+\cmidrule(lr){4-5}
+\cmidrule(lr){6-7}
+& {\small \textbf{UF@\(B\)}} & {\small \textbf{Cov@\(B\)}}
+& {\small \textbf{UF@\(B\)}} & {\small \textbf{Cov@\(B\)}}
+& {\small \textbf{UF@\(B\)}} & {\small \textbf{Cov@\(B\)}} \\
+\midrule
+
+\multicolumn{7}{l}{\textbf{LoCoMo}} \\[1pt]
+
+\rowcolor[HTML]{F3E6D5}
+Random Mutation
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+Unguided LLM
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+LLM-as-Judge
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+Coverage-Guided
+& -- & -- & -- & -- & -- & -- \\
+
+\noalign{\vskip 1pt}
+
+\rowcolor[HTML]{FFF9F2}
+U-Fuzz-Q
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{FFF9F2}
+U-Fuzz-M
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{FFF9F2}
+\textbf{U-Fuzz}
+& -- & -- & -- & -- & -- & -- \\
+
+\addlinespace[3pt]
+\multicolumn{7}{l}{\textbf{LongMemEval-S}} \\[1pt]
+
+\rowcolor[HTML]{F3E6D5}
+Random Mutation
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+Unguided LLM
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+LLM-as-Judge
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{F3E6D5}
+Coverage-Guided
+& -- & -- & -- & -- & -- & -- \\
+
+\noalign{\vskip 1pt}
+
+\rowcolor[HTML]{FFF9F2}
+U-Fuzz-Q
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{FFF9F2}
+U-Fuzz-M
+& -- & -- & -- & -- & -- & -- \\
+\rowcolor[HTML]{FFF9F2}
+\textbf{U-Fuzz}
+& -- & -- & -- & -- & -- & -- \\
+
+\bottomrule
+\end{tabularx}
+\end{minipage}
+\end{table}
+
+Table~\ref{tab:rq1} reports UF@\(B\) and Cov@\(B\) for each benchmark and
+memory system. On LoCoMo, \system finds \textbf{[XXX]}, \textbf{[XXX]}, and
+\textbf{[XXX]} unique faults on Mem0, A-Mem, and Graphiti, with corresponding
+coverage of \textbf{[XXX]}, \textbf{[XXX]}, and \textbf{[XXX]}. On
+LongMemEval-S, the corresponding results are \textbf{[XXX]}, \textbf{[XXX]},
+and \textbf{[XXX]} for UF@\(B\), and \textbf{[XXX]}, \textbf{[XXX]}, and
+\textbf{[XXX]} for Cov@\(B\). The comparison with U-Fuzz-Q and U-Fuzz-M
+further shows how query and memory-state mutations contribute to the full
+fuzzing process.
