@@ -44,6 +44,27 @@ from ufuzz.retrieval_capability import (
     resolve_fuzzing_retrieval,
     resolve_initialization_signature,
 )
+from ufuzz.state_contract import (
+    AffectedPhysicalTransition,
+    AffectedTransitionKind,
+    CertificationStatus,
+    DescendantStateCertificate,
+    LiveLineageState,
+    LogicalSeed,
+    MaterializationFailure,
+    MaterializationFailureKind,
+    MaterializationResult,
+    MutationOpportunity,
+    PhysicalLineageEndpoint,
+    PhysicalTransitionCertificate,
+    PhysicalTransitionOutcome,
+    RealizedMutationArtifact,
+    RebindingKind,
+    ReplayBinding,
+    ReplayRebindingCertificate,
+    SeedAdmission,
+    SemanticMutationCertificate,
+)
 from ufuzz.structural import StructuralIndexBuilder
 
 
@@ -259,6 +280,132 @@ class _GraphitiObjectsByUuid:
 class InformationFlowRegressionTests(unittest.TestCase):
     def assertSearchSafe(self, value: Any) -> None:
         self.assertEqual(list(_structured_key_paths(value)), [])
+
+    def test_state_replay_contract_objects_are_search_safe(self) -> None:
+        campaign = "state-contract-campaign"
+        root = "checkpoint-1"
+        coverage_id = CoverageEntryId(campaign, root, "e1")
+        before = PhysicalEntryRef(campaign, root, "state-before", "memory-1")
+        after = PhysicalEntryRef(campaign, root, "state-after", "memory-1")
+        opportunity = MutationOpportunity.create(
+            opportunity_id="op-1",
+            campaign_id=campaign,
+            root_checkpoint_id=root,
+            parent_seed_id="seed-parent",
+            relation=MutationRelation.UPDATE,
+            canonical_target={"region": ["Ada", "employer"]},
+            target_lineage=(coverage_id,),
+            applicability_evidence={"semantic_region": "Ada/employer"},
+            generation_constraints={"replacement_type": "organization"},
+            possible_transition_outcomes={PhysicalTransitionOutcome.SAME_ID},
+            acceptable_transition_outcomes={PhysicalTransitionOutcome.SAME_ID},
+        )
+        semantic = SemanticMutationCertificate(
+            "semantic-1",
+            opportunity.opportunity_id,
+            campaign,
+            root,
+            opportunity.relation,
+            True,
+            {"obligation": "replace exact semantic value"},
+            "semantic-proof",
+        )
+        artifact = RealizedMutationArtifact(
+            "artifact-1",
+            opportunity,
+            semantic,
+            "query-1",
+            None,
+            "replace_value",
+            {"replacement": "Analytical Engines Ltd"},
+        )
+        affected = AffectedPhysicalTransition(
+            "transition-1",
+            AffectedTransitionKind.SAME_ID_CHANGED,
+            (PhysicalLineageEndpoint(before, (coverage_id,)),),
+            (PhysicalLineageEndpoint(after, (coverage_id,)),),
+            backend_proof_digest="backend-proof",
+        )
+        transition = PhysicalTransitionCertificate(
+            "physical-1",
+            artifact.artifact_id,
+            semantic.certificate_id,
+            campaign,
+            root,
+            frozenset({coverage_id}),
+            CertificationStatus.CERTIFIED,
+            PhysicalTransitionOutcome.SAME_ID,
+            affected.transition_id,
+            (affected,),
+            affected.predecessor_refs,
+            affected.successor_refs,
+            True,
+            "complete-proof",
+        )
+        replay_binding = ReplayBinding(after, (coverage_id,), "binding-proof")
+        rebinding = ReplayRebindingCertificate(
+            "rebinding-1",
+            RebindingKind.DESCENDANT,
+            "synthetic",
+            "config-v1",
+            campaign,
+            root,
+            frozenset({coverage_id}),
+            (replay_binding,),
+            ((coverage_id,),),
+            frozenset(),
+            "rebinding-proof",
+        )
+        descendant = DescendantStateCertificate(
+            "descendant-1",
+            "synthetic",
+            "config-v1",
+            campaign,
+            root,
+            frozenset({coverage_id}),
+            (LiveLineageState((coverage_id,), "projection", "provenance"),),
+            frozenset(),
+            "observable-state",
+            "transition-state",
+            (transition.certificate_id,),
+        )
+        seed = LogicalSeed(
+            "seed-parent",
+            campaign,
+            "synthetic",
+            root,
+            "config-v1",
+            {"query_id": "query-1", "text": "Where does Ada work?"},
+            (artifact,),
+            descendant,
+            ((coverage_id,),),
+        )
+        admission = SeedAdmission.for_executed_child(
+            execution_valid=True,
+            rematerializable=True,
+        )
+        failure = MaterializationFailure(
+            MaterializationFailureKind.TRANSIENT_BACKEND_FAILURE,
+            campaign,
+            root,
+            "temporary local backend failure",
+        )
+        result = MaterializationResult[LogicalSeed].failed(failure)
+        for value in (
+            opportunity,
+            semantic,
+            artifact,
+            affected,
+            transition,
+            replay_binding,
+            rebinding,
+            descendant,
+            seed,
+            admission,
+            failure,
+            result,
+        ):
+            self.assertSearchSafe(value)
 
     def test_evaluator_keys_do_not_cross_into_search_or_ingestion(self) -> None:
         checkpoint = next(LongMemEvalSLoader().load(FIXTURE, verify_artifact=False))
