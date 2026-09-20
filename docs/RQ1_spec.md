@@ -59,10 +59,10 @@ per-campaign budget, not a budget allocated independently to each checkpoint.
 
 For a fixed benchmark, backend, and repetition seed, every method initializes
 all eligible checkpoint states under the same frozen initialization protocol.
-Exact state cloning is preferred. If cloning is unavailable, every method
-replays the same frozen initialization artifacts with all controllable
-randomness, model versions, prompts, decoding settings, and ingestion
-configuration fixed. Identical replay input alone is not evidence of equivalent
+A materialization protocol may replay and certify a frozen initialization
+artifact or, if a backend later supports it faithfully, restore and certify an
+exact snapshot. No snapshot mechanism is currently claimed for Mem0, A-Mem,
+or Graphiti. Identical materialization input alone is not evidence of equivalent
 initialized state. Before method-specific fuzzing, compare the observable
 multiset of retrievable-entry projections for every checkpoint state. The exact
 backend-specific projection is finalized during capability testing.
@@ -75,39 +75,108 @@ to its own initialized retrievable entries. Once equivalence is established,
 the original benchmark queries and all required parent baseline observations
 are executed during initialization. Method-specific fuzzing begins afterward.
 
-Budget accounting is:
+One unit of B is consumed if and only if semantic validation succeeds, the
+exact parent materialization is certified, any memory transition and its
+semantic postcondition are completely certified, the selected public
+retrieval call succeeds, every returned physical object resolves through the
+frozen campaign lineage, and a valid ResolvedRetrievalObservation is produced.
+The increment occurs when that resolved observation is created. Retrieval
+feedback computation and evaluator work occur afterward; evaluator
+confirmation is not required for B.
 
-    valid new mutant execution -> consumes one unit of B
-    INVALID generated candidate -> consumes no unit of B
-    INAPPLICABLE opportunity -> is not generated and consumes no unit of B
+Invalid generation, inapplicability, uncertifiable transition, post-transition
+semantic drift, transient materialization or retrieval failure, and an unknown
+returned physical object consume no B. Evaluator failure after a resolved
+execution does not refund B. Retry counts remain to be frozen. Initialization
+executions do not consume B, contribute to Cov@B, or populate the
+Coverage-Guided seen-entry set.
 
-Initialization executions do not consume B. Invalid candidates may be retried
-under a generation-attempt cap selected after the pilot and frozen before the
-full evaluation. Initialization retrievals do not contribute to Cov@B and do
-not populate the Coverage-Guided seen-entry set.
-
-Every selected parent must already have an observation for its exact state and
-query identity. Initial parent observations come from shared initialization.
-When an executed mutant is retained, its observation is stored with the seed
-and reused if that exact seed later becomes a parent. Normal pair evaluation is:
-
-    cached U(parent)
-        +
-    execute U(mutant) -> consumes one unit of B
-
-A cached observation may be reused only when exact state and query identity are
-proven identical. If identity cannot be proven, reconstruction or parent
-execution overhead is recorded separately and the same protocol is applied to
-all methods. This overhead does not silently enter or disappear from B.
+Every selected parent must already have an authoritative observation for its
+exact logical state and query identity. Each campaign obtains an initial
+parent signature from its own cached retrieval of the exact original
+checkpoint/query pair after equivalent initialization; inventory enumeration
+is not such an observation. A descendant stores the resolved observation that
+validly established it. Rematerialization never replaces this observation.
+A separately required reconstruction or parent execution is logged as overhead
+and is not silently charged as a mutant probe.
 
 A campaign therefore uses B valid new mutant executions in total, plus
-separately logged initialization and reconstruction overhead.
+separately logged initialization, materialization, and reconstruction overhead.
 
-## Seed and one-input invariant
+## Logical seed, materialization, and one-input invariant
 
-A seed is:
+The mathematical fuzzing state remains:
 
     x = (M, q)
+
+Persistent seed identity is not a live StateHandle, backend object,
+vector-store instance, Neo4j group, or replay-local UUID. A persistent logical
+seed is an immutable recipe and certificate containing, conceptually, its root
+checkpoint and campaign identity, frozen configuration identity, exact query
+artifact, ordered realized memory-transition artifacts, semantic and physical
+transition certificates, expected lineage-aware descendant-state certificate,
+and authoritative cached parent retrieval signature. A child becomes a
+retained persistent seed only after its state and lineage are certified.
+
+Materialization follows the abstract contract:
+
+    LogicalSeed
+        -> MaterializationProtocol
+        -> certified live backend state
+        -> DescendantStateCertificate
+
+The protocol may replay-and-certify or use a future exact
+snapshot-restore-and-certify mechanism. Logical seed identity, campaign E_0,
+CoverageState, BehaviorHistory, and parent signatures are independent of that
+mechanism.
+
+Root materialization reconstructs the frozen InitializationArtifact in an
+isolated backend state, establishes complete inventory and initialization
+equivalence, and binds its physical entries. The initial admitted assembly
+over all eligible checkpoints constructs campaign E_0 once. Every later root
+materialization atomically re-binds fresh physical entries to those existing
+CoverageEntryIds.
+Descendant materialization first certifies and re-binds the root, replays the
+exact stored memory-transition artifacts while certifying each transition,
+certifies the lineage-aware descendant state, and installs the exact logical
+query state. Arbitrary descendant replay is not yet implemented.
+
+Re-binding creates no coverage ID and permits no cross-campaign or
+cross-checkpoint binding. Every live retrieval-returnable object must resolve;
+expected deletions remain explicit; replacement, merge, and split grouping,
+stable provenance, projection multiplicity, and lineage multiplicity must
+match the seed certificate; and failure is atomic. Projection equality alone
+is insufficient. If distinct initialized entries e1 and e2 both have
+projection P and replayed objects x and y have the same projection, the replay
+is capability-blocked unless stable certified evidence uniquely establishes
+the bindings. Enumeration order, generated-ID ordering, arbitrary UUID order,
+and semantic similarity cannot break the tie.
+
+A state is materializable when a certified live instance can be created once.
+It is rematerializable when an approved protocol can reconstruct the same
+logical seed and pass E_0 re-binding and descendant-state certification. A
+materializable-only child may remain a valid executed leaf after a resolved
+observation, but it cannot enter the retained-parent pool. Live residency is
+not evidence of rematerializability. The same admission rule applies to all
+five primary methods.
+
+The selected public retrieval APIs are behaviorally read-only under sequential
+use with frozen configuration. A certified materialized memory state may
+therefore serve sequential query-only siblings as an optimization, but logical
+identity and results cannot depend on reuse. Graphiti's shared mutable search
+recipe must not be used concurrently unless it is later isolated, copied, or
+serialized.
+
+An unknown returned physical object is a capability-contract violation. For a
+query-only mutant, abort the current repetition and mark the affected
+checkpoint capability invalid pending diagnosis. For a memory mutant, abort
+the repetition and invalidate the supposedly complete transition certificate.
+In neither case may the implementation drop the object, create an E_0 ID,
+count B, grant a replacement probe, or silently change the applicability mask
+and continue. If remediation changes eligibility or applicability, all
+comparable primary-method campaigns restart under the same newly frozen
+condition. A persistent unresolved violation blocks reporting the affected
+backend-by-benchmark condition.
 
 Each parent-mutant pair changes exactly one input:
 
@@ -292,6 +361,36 @@ and:
 
 Omega_{r,b} contains only applicable obligations and is fixed within a round.
 
+MutationOpportunity and SemanticMutationCertificate are pre-execution,
+method-independent objects. They identify the mutation relation, canonical
+semantic target, target E_0 lineage when relevant, applicability evidence,
+generation constraints, and the source-backed possible and semantically
+acceptable physical transition classes. They contain no retrieval feedback,
+gold answer, evaluator verdict, failure label, or UF@B value.
+
+The mutation relation is distinct from its exact RealizedMutationArtifact.
+Replay stores and reapplies the accepted artifact rather than asking a
+generator to recreate it. A query artifact preserves the exact mutant text,
+parent query identity, relation/subtype, changed slot and context, canonical
+QueryIntent, and semantic certificate. A memory artifact preserves the
+canonical target and E_0 lineage, exact replacement and backend operation
+payload, temporal/reference values, required stable provenance or metadata,
+and semantic certificate. Concrete replacement values remain necessary replay
+state even where CFS intentionally excludes them.
+
+PossibleTransitionOutcomes are source-backed physical classes that may occur
+for the selected backend operation. AcceptableTransitionOutcomes are the
+subset that may satisfy this opportunity if completely certified and
+semantically valid. After execution, a complete PhysicalTransitionCertificate
+establishes one ObservedTransitionOutcome. Physical classes include, where
+applicable, SAME_ID, DELETED, REPLACED, MERGED, SPLIT, and UNCHANGED.
+Certification status is separate: CERTIFIED establishes the physical lineage,
+whereas UNRESOLVED means certification failed and is not a physical outcome.
+UNCHANGED is a possible outcome but cannot satisfy Update, Deletion, or
+Unrelated Change when an actual semantic state change is required. A successful
+adapter OperationReceipt alone proves neither semantic validity nor complete
+physical lineage.
+
 For target-changing mutation, the replacement must be supported by a
 provenance-backed canonical fact for the unchanged requested relation. The
 scheduler-facing obligation identifies the slot and replacement target, not
@@ -308,16 +407,31 @@ temporal position. The backend applies its native update semantics; the new
 value inherits the target's canonical region key.
 
 For deletion, the fact must exist in the structural index and map to a
-faithful public or native backend operation. If the backend cannot delete the
-designated fact without changing other relevant information, the opportunity
-is inapplicable. Low-level backend internals must not emulate an unsupported
-semantic deletion. For Graphiti, episode deletion is usable only when it
-faithfully realizes the designated one-change transition.
+faithful public or native backend operation. A native cascade is acceptable
+only when the structural certificate proves that every semantic effect belongs
+to the designated deletion. Low-level backend internals must not emulate an
+unsupported semantic deletion. For Graphiti, episode deletion is usable only
+when it faithfully realizes the designated one-change transition.
 
-For Unrelated Change, the designated target must be an existing canonical
-region that is structurally unrelated to the current QueryIntent. The
-operation may change the value or state within that region. It cannot introduce
-a new canonical region.
+For Unrelated Change, the designated target must be an existing certified
+semantic entity-relation region that is structurally unrelated to the current
+QueryIntent and has an existing certifiable value/state and faithful backend
+target. The operation may change the value or state within that region. It
+cannot introduce a new canonical region or target a fallback-only source
+region.
+
+A PhysicalTransitionCertificate accounts for the complete physically affected
+retrieval-returnable set, not only the intended target. Every physical change
+must be observed and source-explained, every affected object must receive
+certified lineage, and no collateral effect may be silent. Backend-native
+invalidation, replacement, consolidation, or linked evolution is acceptable
+for Update only when fully certified and semantically part of the selected
+update; an independent semantic change invalidates the mutant. Deletion
+cascades obey the rule above. For Unrelated Change, the complete final semantic
+difference must remain inside the selected unrelated region and disjoint from
+RelevantRegions(QueryIntent). Native collateral evolution that affects a
+relevant region is post-transition semantic drift: the mutant is INVALID and
+consumes no B.
 
 ## Inapplicable and invalid outcomes
 
@@ -330,16 +444,20 @@ require a new region.
 Inapplicable opportunities are excluded from Omega_{r,b}. They do not count as
 failed generation attempts or appear in the applicable-obligation denominator.
 
-INVALID means an applicable obligation was selected and a candidate was
-generated, but the candidate failed pre-execution validation. An invalid
-candidate leaves its obligation uncovered and may be retried under the frozen
-generation-attempt cap. It does not consume B.
+INVALID means an applicable obligation was selected but its realized artifact
+failed semantic validation, either before execution or through a completely
+observed post-transition semantic drift. An invalid candidate leaves its
+obligation uncovered and may be retried under the frozen generation-attempt
+cap. It does not consume B. When source evidence shows that a target
+necessarily produces semantic drift, that opportunity is instead
+method-independently INAPPLICABLE.
 
-Validation is completed before mutant execution. It may use the structural
-index, parent and candidate forms, backend operation results, and observable
-backend state. It cannot use the mutant retrieval, mutant response,
-ReferenceVault, or failure oracle. An LLM judgment alone cannot accept a
-candidate.
+Pre-execution semantic validation uses the structural index, parent and
+candidate forms, and stable provenance. Memory mutations additionally require
+post-execution physical-transition and semantic-postcondition certification
+before their public retrieval is executed. Neither layer uses the mutant
+retrieval, mutant response, ReferenceVault, or failure oracle. An LLM judgment
+alone cannot accept a candidate.
 
 ## Backend applicability mask
 
@@ -391,6 +509,24 @@ For each stable source unit p, define:
 and use ("source", p) as a conservative fallback only when K_i(p) is empty.
 Residual unstructured text does not create an additional fallback for a source
 that already has a certified semantic key.
+
+Separate the certified semantic target space from the broader provenance
+index:
+
+    K_i^sem = union over p of K_i(p)
+
+    K_i^prov =
+        union over p of RegionsForSource_i(p)
+
+K_i^sem contains only certified entity-relation regions. K_i^prov supports
+provenance and indexing and may contain fallback-only ("source", p) regions.
+Unrelated Change targets only:
+
+    K_i^sem \ RelevantRegions(QueryIntent(q))
+
+and only a region with an existing certifiable semantic value/state and
+faithful backend target. A fallback-only source region is never a legal
+Unrelated Change target.
 
 For a retrieved entry m, define:
 
@@ -447,9 +583,29 @@ later physical record created for an update inherits the designated target's
 coverage ID. Deletion does not remove the target from E_0 and does not itself
 count as retrieval. Unrelated Change remains associated with its selected
 initialized target. No valid memory-state mutation creates a coverage ID
-outside E_0. If a particular split, merge, or replacement cannot be certified
-against its initialized target, that mutation opportunity is INAPPLICABLE; it
+outside E_0. If source-backed capability cannot certify a particular split,
+merge, or replacement against its initialized target, that mutation
+opportunity is INAPPLICABLE. An unexpectedly unresolved executed transition is
+instead rejected without B and handled as a transition/capability failure. It
 does not automatically exclude the complete backend/benchmark condition.
+
+Initialization multiset equivalence is not sufficient to certify a descendant
+rematerialization. DescendantStateCertificate must establish both observable-
+state and lineage equivalence, including inherited E_0 lineage, observable
+projections, stable provenance, deletion state, replacement/merge/split
+grouping, transition history needed for future behavior, and other backend
+transition-relevant state. Distinct initialized E_0 entries cannot be silently
+permuted.
+
+For each transition, the complete certificate distinguishes the intended
+semantic target from the physically affected lineage set. Every affected
+object is classified as unchanged lineage, same-ID changed, deleted, replaced,
+a merge participant, a split participant, newly observed but uncertified, or
+otherwise unresolved. Either uncertified classification makes the certificate
+status UNRESOLVED. A new physical object receives no new CoverageEntryId and
+inherits existing lineage only through exact certification. The lineage
+mapping can represent final merge or split bindings, but a separate transition
+certificate is required to prove those bindings.
 
 ## Cov@B
 
@@ -527,7 +683,8 @@ coverage-entry set. dedup_first removes only identical complete tuple tokens.
 
 For every original root checkpoint i, maintain a separate behavior archive
 H_i^(t). Do not compare signatures across checkpoints. Initialize it from the
-cached original parent or baseline retrieval observations for that checkpoint:
+campaign's cached retrieval observations of the exact original checkpoint/query
+pairs after equivalent initialization:
 
     H_i^(0) =
         {canonical retrieval signatures observed during initialization
@@ -536,6 +693,8 @@ cached original parent or baseline retrieval observations for that checkpoint:
 These initialization signatures seed behavioral history only. Coverage still
 starts with C_0 = empty, Coverage-Guided still starts with seen = empty, and
 initialization receives no Cov@B or Coverage-Guided credit.
+Inventory enumeration alone is not a parent-query observation and cannot seed
+this archive.
 
 For a valid execution t descended from checkpoint i, score sigma_t against
 H_i^(t-1) and then update:
@@ -605,23 +764,25 @@ approximately 0 while D_t remains approximately 1.
 ### Coverage gain and search priorities
 
 All retrieval-derived quantities and priorities below are computed only after
-a valid mutant has executed and its actual R_t has been observed. The search
-chronology is:
+a valid mutant has produced a resolved observation. The search chronology is:
 
     select eligible parent and mutation opportunity
-        -> generate mutant
-        -> validate mutant
-        -> execute valid mutant
-        -> observe R_t
+        -> realize exact mutant artifact
+        -> validate semantic obligation
+        -> certify exact parent materialization
+        -> apply and certify memory transition when applicable
+        -> execute selected public retrieval
+        -> resolve every returned physical object through campaign lineage
+        -> create ResolvedRetrievalObservation and consume one unit of B
         -> compute G_t, N_t, and D_t when applicable
         -> compute S_CG,t or S_UF,t
         -> use the score for retention or future expansion priority
 
-The valid execution consumes one unit of B before its feedback score becomes
+The resolved execution consumes one unit of B before its feedback score becomes
 available. S_CG,t and S_UF,t prioritize executed mutants as possible future
 seeds or parents; neither can rank an unexecuted candidate whose retrieval has
-not been observed. Cached exact-parent observations supply sigma_parent(t) for
-D_t but do not change this chronology.
+not been observed. Cached authoritative exact-parent observations supply
+sigma_parent(t) for D_t but do not change this chronology.
 
 For execution t, define:
 
@@ -812,6 +973,7 @@ before full evaluation:
 - numerical B;
 - retrieval depth top-k;
 - generation retry cap;
+- transient materialization/backend retry cap;
 - repetition count;
 - uncertainty statistic;
 - LLM-as-Judge candidate-pool size and judging cost;
@@ -819,12 +981,12 @@ before full evaluation:
 - entity/relation/time/constraint canonicalization procedure;
 - manual-audit sample size.
 
-The following methodological definitions will be specified separately before
-full evaluation:
+The following definitions and implementation/capability details will be fixed
+separately before full evaluation:
 
 - the executable evaluator predicates C_o and Ans, including retrieval-side
   and answer/use-side correctness and the resulting R/A/RA assignment;
-- backend-specific retrievable-entry projection implementations;
+- backend-specific replay re-binding and transition-certificate implementations;
 - concrete scheduler queue capacity, eviction, and batching mechanics;
 - backend capability issues not yet live-validated.
 
