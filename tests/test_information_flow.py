@@ -11,6 +11,21 @@ import unittest
 from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
 from ufuzz.backends.base import source_metadata
 from ufuzz.benchmarks import LongMemEvalSLoader
+from ufuzz.coverage import (
+    CoverageEntryId,
+    CoverageState,
+    FrozenCheckpointInventory,
+    InitialCoverageEntry,
+    InitialEntryLineage,
+    LineageRelation,
+    PhysicalEntryRef,
+)
+from ufuzz.retrieval_feedback import (
+    BehaviorHistory,
+    MutationRelation,
+    retrieval_signature,
+    score_observed_retrieval,
+)
 from ufuzz.structural import StructuralIndexBuilder
 
 
@@ -26,6 +41,8 @@ EVALUATOR_KEYS = {
     "gold_answers",
     "failure_label",
     "oracle_verdict",
+    "failure_surface",
+    "uf_at_b",
 }
 
 
@@ -154,6 +171,65 @@ class InformationFlowRegressionTests(unittest.TestCase):
         self.assertSearchSafe(artifact)
         for source in artifact.sources:
             self.assertSearchSafe(source_metadata(source))
+
+        coverage_id = CoverageEntryId(
+            "information-flow-campaign",
+            checkpoint.checkpoint_id,
+            "entry-1",
+        )
+        coverage_entry = InitialCoverageEntry(
+            coverage_id=coverage_id,
+            root_checkpoint_id=checkpoint.checkpoint_id,
+            initial_backend_entry_id="backend-entry-1",
+            initial_observable_projection={"content": "search-safe projection"},
+            provenance_ids=(checkpoint.sources[0].provenance_id,),
+        )
+        inventory = FrozenCheckpointInventory(
+            "information-flow-campaign",
+            checkpoint.checkpoint_id,
+            (coverage_entry,),
+        )
+        lineage = InitialEntryLineage("information-flow-campaign", (inventory,))
+        physical_entry = PhysicalEntryRef(
+            "information-flow-campaign",
+            checkpoint.checkpoint_id,
+            "state-1",
+            "backend-entry-1",
+        )
+        binding = lineage.certify_binding(
+            physical_entry,
+            (coverage_id,),
+            LineageRelation.INITIAL,
+        )
+        signature = retrieval_signature((binding.coverage_ids,))
+        history = BehaviorHistory(
+            "information-flow-campaign",
+            {checkpoint.checkpoint_id: (signature,)},
+        )
+        coverage = CoverageState.from_entries((coverage_entry,))
+        coverage_update = coverage.observe((binding.coverage_ids,))
+        feedback = score_observed_retrieval(
+            root_checkpoint_id=checkpoint.checkpoint_id,
+            observed_signature=signature,
+            coverage_update=coverage_update,
+            retrieval_depth=2,
+            mutation_relation=MutationRelation.UPDATE,
+            history=history,
+        )
+        for search_side_value in (
+            coverage_id,
+            coverage_entry,
+            inventory,
+            lineage,
+            physical_entry,
+            binding,
+            signature,
+            history,
+            coverage,
+            coverage_update,
+            feedback,
+        ):
+            self.assertSearchSafe(search_side_value)
 
         async def exercise_adapters() -> None:
             mem0_sink = _Mem0Sink()
