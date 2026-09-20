@@ -10,6 +10,7 @@ import unittest
 
 from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
 from ufuzz.backends.base import source_metadata
+from ufuzz.backends.mem0_capability import Mem0RetrievableEntryCapability
 from ufuzz.benchmarks import LongMemEvalSLoader
 from ufuzz.coverage import (
     CoverageEntryId,
@@ -316,9 +317,17 @@ class InformationFlowRegressionTests(unittest.TestCase):
             mem0 = Mem0Adapter(memory_factory=lambda _: mem0_sink, infer=False)
             mem0_state = await mem0.create_isolated_state(artifact)
             await mem0.ingest(mem0_state, artifact.sources[:1])
+            mem0_capability = Mem0RetrievableEntryCapability(mem0_state)
+            mem0_inventory = await mem0_capability.inventory(
+                campaign_id="information-flow-campaign",
+                root_checkpoint_id=checkpoint.checkpoint_id,
+                state_id=mem0_state.state_id,
+            )
             self.assertSearchSafe(mem0_state.metadata)
             self.assertSearchSafe(mem0._provenance)
             self.assertSearchSafe(mem0_sink.entries)
+            self.assertSearchSafe(mem0_capability.scope)
+            self.assertSearchSafe(mem0_inventory)
             await mem0.teardown(mem0_state)
 
             amem_sink = _AMemSink()
