@@ -26,6 +26,20 @@ from ufuzz.retrieval_feedback import (
     retrieval_signature,
     score_observed_retrieval,
 )
+from ufuzz.retrieval_capability import (
+    CapabilityOperation,
+    CapabilityResult,
+    RankedPhysicalRetrieval,
+    RetrievableEntryInventory,
+    RetrievableEntryProjection,
+    RetrievableInventoryEntry,
+    RetrievalCapabilityBlocker,
+    assemble_campaign_coverage,
+    build_frozen_checkpoint_inventory,
+    compare_initialization_inventories,
+    resolve_fuzzing_retrieval,
+    resolve_initialization_signature,
+)
 from ufuzz.structural import StructuralIndexBuilder
 
 
@@ -216,6 +230,62 @@ class InformationFlowRegressionTests(unittest.TestCase):
             mutation_relation=MutationRelation.UPDATE,
             history=history,
         )
+
+        entry_projection = RetrievableEntryProjection(
+            "synthetic",
+            "SyntheticMemory",
+            {"content": "search-safe projection"},
+        )
+        capability_inventory = RetrievableEntryInventory(
+            backend="synthetic",
+            selected_public_retrieval_api="Synthetic.search",
+            retrieval_object_class="SyntheticMemory",
+            retrieval_returnability_basis="same public result object class",
+            campaign_id="information-flow-campaign",
+            root_checkpoint_id=checkpoint.checkpoint_id,
+            state_id="state-1",
+            entries=(
+                RetrievableInventoryEntry(
+                    physical_entry,
+                    entry_projection,
+                    (checkpoint.sources[0].provenance_id,),
+                ),
+            ),
+        )
+        equivalence = compare_initialization_inventories(
+            capability_inventory,
+            capability_inventory,
+        )
+        frozen_build = build_frozen_checkpoint_inventory(capability_inventory)
+        campaign_coverage = assemble_campaign_coverage(
+            "information-flow-campaign",
+            (frozen_build,),
+        )
+        ranked_retrieval = RankedPhysicalRetrieval(
+            "synthetic",
+            "Synthetic.search",
+            "SyntheticMemory",
+            "information-flow-campaign",
+            checkpoint.checkpoint_id,
+            "state-1",
+            (physical_entry,),
+        )
+        initialization_signature = resolve_initialization_signature(
+            ranked_retrieval,
+            campaign_coverage.lineage,
+        )
+        resolved_observation = resolve_fuzzing_retrieval(
+            ranked_retrieval,
+            campaign_coverage.lineage,
+            campaign_coverage.coverage_state,
+        )
+        blocker = RetrievalCapabilityBlocker(
+            "synthetic",
+            checkpoint.checkpoint_id,
+            CapabilityOperation.INVENTORY,
+            "search-side capability diagnostic",
+        )
+        capability_failure = CapabilityResult.failure(blocker)
         for search_side_value in (
             coverage_id,
             coverage_entry,
@@ -228,6 +298,16 @@ class InformationFlowRegressionTests(unittest.TestCase):
             coverage,
             coverage_update,
             feedback,
+            entry_projection,
+            capability_inventory,
+            equivalence,
+            frozen_build,
+            campaign_coverage,
+            ranked_retrieval,
+            initialization_signature,
+            resolved_observation,
+            blocker,
+            capability_failure,
         ):
             self.assertSearchSafe(search_side_value)
 
