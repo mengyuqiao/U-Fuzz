@@ -7,10 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
 import unittest
+from uuid import NAMESPACE_URL, uuid5
 
 from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
 from ufuzz.backends.amem_capability import AMemRetrievableEntryCapability
 from ufuzz.backends.base import source_metadata
+from ufuzz.backends.graphiti_capability import GraphitiRetrievableEntryCapability
 from ufuzz.backends.mem0_capability import Mem0RetrievableEntryCapability
 from ufuzz.benchmarks import LongMemEvalSLoader
 from ufuzz.coverage import (
@@ -157,19 +159,57 @@ class _AMemCollection:
 class _GraphitiSink:
     def __init__(self) -> None:
         self.episodes: dict[str, SimpleNamespace] = {}
+        self.episode_nodes: dict[str, SimpleNamespace] = {}
+        self.entity_nodes: dict[str, SimpleNamespace] = {}
         self.add_calls: list[dict[str, Any]] = []
+        self.edges = SimpleNamespace(entity=_GraphitiEntityEdges(self))
+        self.nodes = SimpleNamespace(
+            entity=_GraphitiObjectsByUuid(self.entity_nodes),
+            episode=_GraphitiObjectsByUuid(self.episode_nodes),
+        )
 
     async def add_episode(self, **kwargs):
         self.add_calls.append(kwargs)
         episode_uuid = kwargs["uuid"]
+        source_uuid = str(uuid5(NAMESPACE_URL, f"source:{episode_uuid}"))
+        target_uuid = str(uuid5(NAMESPACE_URL, f"target:{episode_uuid}"))
+        edge_uuid = str(uuid5(NAMESPACE_URL, f"edge:{episode_uuid}"))
+        group_id = kwargs["group_id"]
+        self.entity_nodes[source_uuid] = SimpleNamespace(
+            uuid=source_uuid,
+            group_id=group_id,
+            name="Source",
+            summary="Synthetic source",
+            labels=["Entity"],
+            attributes={},
+        )
+        self.entity_nodes[target_uuid] = SimpleNamespace(
+            uuid=target_uuid,
+            group_id=group_id,
+            name="Target",
+            summary="Synthetic target",
+            labels=["Entity"],
+            attributes={},
+        )
+        self.episode_nodes[episode_uuid] = SimpleNamespace(
+            uuid=episode_uuid,
+            group_id=group_id,
+            source_description=kwargs["source_description"],
+        )
         edge = SimpleNamespace(
-            uuid=f"edge:{episode_uuid}",
+            uuid=edge_uuid,
+            source_node_uuid=source_uuid,
+            target_node_uuid=target_uuid,
+            name="REMEMBERS",
             fact=kwargs["episode_body"],
+            fact_embedding=None,
             episodes=[episode_uuid],
-            group_id=kwargs["group_id"],
+            group_id=group_id,
             valid_at=kwargs["reference_time"],
             invalid_at=None,
             expired_at=None,
+            reference_time=kwargs["reference_time"],
+            attributes={},
         )
         self.episodes[episode_uuid] = edge
         return SimpleNamespace(edges=[edge])
@@ -182,6 +222,38 @@ class _GraphitiSink:
 
     async def remove_episode(self, episode_uuid):
         self.episodes.pop(episode_uuid, None)
+        self.episode_nodes.pop(episode_uuid, None)
+
+    async def search(self, _query, *, group_ids, num_results):
+        return [
+            edge
+            for edge in self.episodes.values()
+            if edge.group_id in group_ids
+        ][:num_results]
+
+
+class _GraphitiEntityEdges:
+    def __init__(self, sink: _GraphitiSink) -> None:
+        self.sink = sink
+
+    async def get_by_group_ids(self, group_ids, limit=None, uuid_cursor=None):
+        del limit, uuid_cursor
+        return [
+            edge
+            for edge in self.sink.episodes.values()
+            if edge.group_id in group_ids
+        ]
+
+    async def load_embeddings(self, edge):
+        edge.fact_embedding = [0.25, 0.75]
+
+
+class _GraphitiObjectsByUuid:
+    def __init__(self, values: dict[str, SimpleNamespace]) -> None:
+        self.values = values
+
+    async def get_by_uuids(self, uuids):
+        return [self.values[value] for value in uuids if value in self.values]
 
 
 class InformationFlowRegressionTests(unittest.TestCase):
@@ -371,8 +443,16 @@ class InformationFlowRegressionTests(unittest.TestCase):
             graphiti = GraphitiAdapter(graphiti=graphiti_sink)
             graphiti_state = await graphiti.create_isolated_state(artifact)
             await graphiti.ingest(graphiti_state, artifact.sources[:1])
+            graphiti_capability = GraphitiRetrievableEntryCapability(graphiti_state)
+            graphiti_inventory = await graphiti_capability.inventory(
+                campaign_id="information-flow-campaign",
+                root_checkpoint_id=checkpoint.checkpoint_id,
+                state_id=graphiti_state.state_id,
+            )
             self.assertSearchSafe(graphiti_state.metadata)
             self.assertSearchSafe(graphiti._episode_provenance)
+            self.assertSearchSafe(graphiti_capability.scope)
+            self.assertSearchSafe(graphiti_inventory)
             descriptions = [
                 json.loads(call["source_description"])
                 for call in graphiti_sink.add_calls
