@@ -24,6 +24,13 @@ from ufuzz.coverage import (
     LineageRelation,
     PhysicalEntryRef,
 )
+from ufuzz.materialization import (
+    CertifiedExecutionObservation,
+    CertifiedMaterialization,
+    EphemeralMaterializedState,
+    RootMaterializationRequest,
+    TransitionReplay,
+)
 from ufuzz.retrieval_feedback import (
     BehaviorHistory,
     MutationRelation,
@@ -64,6 +71,7 @@ from ufuzz.state_contract import (
     ReplayRebindingCertificate,
     SeedAdmission,
     SemanticMutationCertificate,
+    build_rebound_lineage,
 )
 from ufuzz.structural import StructuralIndexBuilder
 
@@ -380,6 +388,63 @@ class InformationFlowRegressionTests(unittest.TestCase):
             descendant,
             ((coverage_id,),),
         )
+        replay_inventory = FrozenCheckpointInventory(
+            campaign,
+            root,
+            (
+                InitialCoverageEntry(
+                    coverage_id,
+                    root,
+                    "memory-1",
+                    {"content": "search-safe state"},
+                ),
+            ),
+        )
+        replay_lineage = build_rebound_lineage(rebinding, replay_inventory)
+        ephemeral = EphemeralMaterializedState(
+            "opaque-live-handle",
+            "synthetic",
+            "config-v1",
+            campaign,
+            root,
+            "state-after",
+        )
+        transition_replay = TransitionReplay(ephemeral, transition)
+        root_request = RootMaterializationRequest(
+            "synthetic",
+            "config-v1",
+            campaign,
+            root,
+            "initialization-artifact-1",
+            frozenset({coverage_id}),
+        )
+        certified_materialization = CertifiedMaterialization(
+            seed.seed_id,
+            ephemeral,
+            replay_lineage,
+            rebinding,
+            descendant,
+            (transition,),
+        )
+        ranked = RankedPhysicalRetrieval(
+            "synthetic",
+            "Synthetic.search",
+            "SyntheticMemory",
+            campaign,
+            root,
+            "state-after",
+            (after,),
+        )
+        replay_observation = resolve_fuzzing_retrieval(
+            ranked,
+            replay_lineage,
+            CoverageState(frozenset({coverage_id})),
+        )
+        certified_execution = CertifiedExecutionObservation(
+            seed.seed_id,
+            certified_materialization,
+            replay_observation,
+        )
         admission = SeedAdmission.for_executed_child(
             execution_valid=True,
             rematerializable=True,
@@ -401,6 +466,11 @@ class InformationFlowRegressionTests(unittest.TestCase):
             rebinding,
             descendant,
             seed,
+            root_request,
+            ephemeral,
+            transition_replay,
+            certified_materialization,
+            certified_execution,
             admission,
             failure,
             result,
