@@ -9,6 +9,7 @@ from typing import Any, Mapping
 import unittest
 
 from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
+from ufuzz.backends.amem_capability import AMemRetrievableEntryCapability
 from ufuzz.backends.base import source_metadata
 from ufuzz.backends.mem0_capability import Mem0RetrievableEntryCapability
 from ufuzz.benchmarks import LongMemEvalSLoader
@@ -119,19 +120,38 @@ class _Mem0Sink:
 class _AMemSink:
     def __init__(self) -> None:
         self.memories: dict[str, SimpleNamespace] = {}
+        self.retriever = SimpleNamespace(collection=_AMemCollection(self.memories))
 
     def add_note(self, content, time=None, **kwargs):
         local_id = f"a{len(self.memories) + 1}"
         self.memories[local_id] = SimpleNamespace(
             id=local_id,
             content=content,
+            context="General",
+            keywords=[],
             timestamp=time,
             tags=kwargs.get("tags", []),
         )
+        self.retriever.collection.ids.append(local_id)
         return local_id
 
     def delete(self, local_id):
+        if local_id in self.retriever.collection.ids:
+            self.retriever.collection.ids.remove(local_id)
         return self.memories.pop(local_id, None) is not None
+
+
+class _AMemCollection:
+    def __init__(self, memories) -> None:
+        self.name = "memories"
+        self.memories = memories
+        self.ids: list[str] = []
+
+    def get(self):
+        return {"ids": list(self.ids)}
+
+    def count(self):
+        return len(self.ids)
 
 
 class _GraphitiSink:
@@ -334,9 +354,17 @@ class InformationFlowRegressionTests(unittest.TestCase):
             amem = AMemAdapter(memory_factory=lambda: amem_sink)
             amem_state = await amem.create_isolated_state(artifact)
             await amem.ingest(amem_state, artifact.sources[:1])
+            amem_capability = AMemRetrievableEntryCapability(amem_state)
+            amem_inventory = await amem_capability.inventory(
+                campaign_id="information-flow-campaign",
+                root_checkpoint_id=checkpoint.checkpoint_id,
+                state_id=amem_state.state_id,
+            )
             self.assertSearchSafe(amem_state.metadata)
             self.assertSearchSafe(amem._provenance)
             self.assertSearchSafe(amem_sink.memories)
+            self.assertSearchSafe(amem_capability.scope)
+            self.assertSearchSafe(amem_inventory)
             await amem.teardown(amem_state)
 
             graphiti_sink = _GraphitiSink()
