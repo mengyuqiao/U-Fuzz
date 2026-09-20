@@ -99,6 +99,39 @@ def _validate_signature_scope(
             _validate_id_scope(coverage_id, campaign_id, root_checkpoint_id)
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutableQueryArtifact:
+    """Persistent, backend-independent state for one exact executable query.
+
+    ``executable_text`` is passed to the selected public retrieval API exactly
+    as stored.  Search-safe metadata may describe the query, but no backend may
+    inspect it to discover or reconstruct the executable text.
+    """
+
+    artifact_id: str
+    executable_text: str
+    metadata: FrozenMapping
+
+    def __post_init__(self) -> None:
+        _require_text("artifact_id", self.artifact_id)
+        _require_text("executable_text", self.executable_text)
+        object.__setattr__(self, "metadata", _freeze_mapping(self.metadata))
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        artifact_id: str,
+        executable_text: str,
+        metadata: Mapping[str, Any] | FrozenMapping,
+    ) -> ExecutableQueryArtifact:
+        return cls(
+            artifact_id,
+            executable_text,
+            _freeze_mapping(metadata),
+        )
+
+
 class PhysicalTransitionOutcome(StrEnum):
     """An actual physical outcome; inability to certify is deliberately absent."""
 
@@ -361,6 +394,22 @@ class RealizedMutationArtifact:
             _require_text("exact_mutant_query", self.exact_mutant_query or "")
         elif self.exact_mutant_query is not None:
             raise ValueError("memory mutation artifact cannot replace the query")
+
+
+def validate_query_artifact_matches_mutation(
+    query_artifact: ExecutableQueryArtifact,
+    realized_mutation: RealizedMutationArtifact,
+) -> None:
+    """Require a query-mutant child to retain the exact realized query text."""
+
+    if not isinstance(query_artifact, ExecutableQueryArtifact):
+        raise TypeError("query artifact must be an ExecutableQueryArtifact")
+    if not isinstance(realized_mutation, RealizedMutationArtifact):
+        raise TypeError("realized mutation must be a RealizedMutationArtifact")
+    if realized_mutation.opportunity.relation not in _QUERY_RELATIONS:
+        raise ValueError("realized mutation is not a query mutation")
+    if query_artifact.executable_text != realized_mutation.exact_mutant_query:
+        raise ValueError("query artifact does not preserve exact realized mutant text")
 
 
 @dataclass(frozen=True, slots=True)
@@ -893,7 +942,7 @@ class LogicalSeed:
     backend: str
     root_checkpoint_id: str
     frozen_configuration_id: str
-    current_query_artifact: FrozenMapping
+    current_query_artifact: ExecutableQueryArtifact
     memory_transition_artifacts: tuple[RealizedMutationArtifact, ...]
     expected_descendant_state: DescendantStateCertificate
     authoritative_parent_signature: RetrievalSignature
@@ -907,11 +956,10 @@ class LogicalSeed:
             "frozen_configuration_id",
         ):
             _require_text(name, getattr(self, name))
-        object.__setattr__(
-            self,
-            "current_query_artifact",
-            _freeze_mapping(self.current_query_artifact),
-        )
+        if not isinstance(self.current_query_artifact, ExecutableQueryArtifact):
+            raise TypeError(
+                "current_query_artifact must be an ExecutableQueryArtifact"
+            )
         artifacts = tuple(self.memory_transition_artifacts)
         object.__setattr__(self, "memory_transition_artifacts", artifacts)
         state = self.expected_descendant_state

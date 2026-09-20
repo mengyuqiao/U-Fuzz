@@ -6,6 +6,7 @@ import unittest
 from ufuzz.backends.base import OperationReceipt
 from ufuzz.coverage import (
     CoverageEntryId,
+    FrozenMapping,
     FrozenCheckpointInventory,
     InitialCoverageEntry,
     InitialEntryLineage,
@@ -19,6 +20,7 @@ from ufuzz.state_contract import (
     AffectedTransitionKind,
     CertificationStatus,
     DescendantStateCertificate,
+    ExecutableQueryArtifact,
     LiveLineageState,
     LogicalSeed,
     MaterializationFailure,
@@ -37,6 +39,7 @@ from ufuzz.state_contract import (
     build_rebound_lineage,
     descendant_states_equivalent,
     validate_opportunity_parent,
+    validate_query_artifact_matches_mutation,
     validate_memory_child_contract,
 )
 
@@ -74,6 +77,18 @@ class StateContractTests(unittest.TestCase):
     def physical(self, state_id: str, backend_entry_id: str) -> PhysicalEntryRef:
         return PhysicalEntryRef(
             self.campaign, self.root, state_id, backend_entry_id
+        )
+
+    def query_artifact(
+        self,
+        text: str = "Where does Ada work?",
+        *,
+        artifact_id: str = "query-artifact-1",
+    ) -> ExecutableQueryArtifact:
+        return ExecutableQueryArtifact.create(
+            artifact_id=artifact_id,
+            executable_text=text,
+            metadata={"query_id": "q1"},
         )
 
     def endpoint(
@@ -250,7 +265,7 @@ class StateContractTests(unittest.TestCase):
             "synthetic",
             self.root,
             "config-v1",
-            {"query_id": "q1", "text": "Where does Ada work?"},
+            self.query_artifact(),
             (artifact,),
             descendant,
             ((self.e1,),),
@@ -259,6 +274,127 @@ class StateContractTests(unittest.TestCase):
             hash(value)
         with self.assertRaises(FrozenInstanceError):
             seed.backend = "changed"  # type: ignore[misc]
+
+    def test_executable_query_artifact_preserves_exact_text_and_freezes_metadata(self) -> None:
+        exact = "  Where does Ada work?\nKeep punctuation: A/B!  "
+        artifact = ExecutableQueryArtifact.create(
+            artifact_id="query-artifact-exact",
+            executable_text=exact,
+            metadata={"query_id": "q1", "audit": {"case": "Original"}},
+        )
+        self.assertEqual(artifact.executable_text, exact)
+        self.assertTrue(artifact.executable_text.startswith("  "))
+        self.assertTrue(artifact.executable_text.endswith("  "))
+        self.assertEqual(artifact.metadata["audit"]["case"], "Original")
+        hash(artifact)
+        with self.assertRaises(FrozenInstanceError):
+            artifact.executable_text = "changed"  # type: ignore[misc]
+        with self.assertRaises(TypeError):
+            artifact.metadata["query_id"] = "changed"  # type: ignore[index]
+
+    def test_executable_query_artifact_rejects_invalid_identity_text_and_metadata(self) -> None:
+        for artifact_id in ("", None):
+            with self.assertRaises(ValueError):
+                ExecutableQueryArtifact(  # type: ignore[arg-type]
+                    artifact_id, "query", FrozenMapping({})
+                )
+        for text in ("", None, 7):
+            with self.assertRaises(ValueError):
+                ExecutableQueryArtifact(  # type: ignore[arg-type]
+                    "query-artifact", text, FrozenMapping({})
+                )
+        with self.assertRaisesRegex(ValueError, "evaluator-only"):
+            ExecutableQueryArtifact.create(
+                artifact_id="query-artifact",
+                executable_text="ordinary benchmark query",
+                metadata={"audit": {"gold_answer": "secret"}},
+            )
+        allowed = ExecutableQueryArtifact.create(
+            artifact_id="query-artifact",
+            executable_text="What answer has evidence in memory?",
+            metadata={"query_id": "q1"},
+        )
+        self.assertEqual(
+            allowed.executable_text,
+            "What answer has evidence in memory?",
+        )
+        whitespace_only = ExecutableQueryArtifact.create(
+            artifact_id="query-artifact-whitespace",
+            executable_text="   ",
+            metadata={},
+        )
+        self.assertEqual(whitespace_only.executable_text, "   ")
+
+    def test_logical_seed_requires_explicit_executable_query_artifact(self) -> None:
+        values = (
+            "seed-parent",
+            self.campaign,
+            "synthetic",
+            self.root,
+            "config-v1",
+        )
+        with self.assertRaisesRegex(TypeError, "ExecutableQueryArtifact"):
+            LogicalSeed(
+                *values,
+                FrozenMapping({"query_id": "q1", "text": "query"}),  # type: ignore[arg-type]
+                (self.memory_artifact(),),
+                self.descendant(),
+                ((self.e1,),),
+            )
+        accepted = LogicalSeed(
+            *values,
+            self.query_artifact(),
+            (self.memory_artifact(),),
+            self.descendant(),
+            ((self.e1,),),
+        )
+        self.assertIsInstance(
+            accepted.current_query_artifact,
+            ExecutableQueryArtifact,
+        )
+
+    def test_query_mutation_must_match_child_executable_text_exactly(self) -> None:
+        opportunity = MutationOpportunity.create(
+            opportunity_id="query-opportunity",
+            campaign_id=self.campaign,
+            root_checkpoint_id=self.root,
+            parent_seed_id="seed-parent",
+            relation=MutationRelation.MEANING_PRESERVING_QUERY,
+            canonical_target={"slot": "wording"},
+            applicability_evidence={"semantic": "valid"},
+            generation_constraints={"preserve_intent": True},
+        )
+        certificate = SemanticMutationCertificate(
+            "query-semantic-certificate",
+            opportunity.opportunity_id,
+            self.campaign,
+            self.root,
+            opportunity.relation,
+            True,
+            {"obligation": "same intent"},
+            "query-semantic-proof",
+        )
+        realized = RealizedMutationArtifact(
+            "query-mutation-artifact",
+            opportunity,
+            certificate,
+            "parent-query-artifact",
+            "  Where is Ada employed?\n",
+            "paraphrase",
+            {"changed_slot": "wording"},
+        )
+        child = ExecutableQueryArtifact.create(
+            artifact_id="child-query-artifact",
+            executable_text="  Where is Ada employed?\n",
+            metadata={"parent_query_artifact_id": "parent-query-artifact"},
+        )
+        validate_query_artifact_matches_mutation(child, realized)
+        with self.assertRaisesRegex(ValueError, "exact realized mutant text"):
+            validate_query_artifact_matches_mutation(
+                replace(child, executable_text="Where is Ada employed?"),
+                realized,
+            )
+        self.assertIsInstance(self.query_artifact(), type(child))
 
     def test_unresolved_is_not_a_physical_outcome(self) -> None:
         self.assertNotIn("unresolved", {item.value for item in PhysicalTransitionOutcome})
@@ -743,7 +879,7 @@ class StateContractTests(unittest.TestCase):
             "synthetic",
             self.root,
             "config-v1",
-            {"query_id": "q1", "text": "Where does Ada work?"},
+            self.query_artifact(),
             (artifact,),
             descendant,
             ((self.e1,),),
@@ -778,7 +914,7 @@ class StateContractTests(unittest.TestCase):
             "synthetic",
             self.root,
             "config-v1",
-            {"query_id": "q1", "text": "Where does Ada work?"},
+            self.query_artifact(),
             (self.memory_artifact(),),
             self.descendant(),
             ((self.e1,),),
@@ -798,7 +934,7 @@ class StateContractTests(unittest.TestCase):
             "synthetic",
             self.root,
             "config-v1",
-            {"query_id": "q1", "text": "Where does Ada work?"},
+            self.query_artifact(),
             (self.memory_artifact(),),
             self.descendant(),
             ((self.e1,),),

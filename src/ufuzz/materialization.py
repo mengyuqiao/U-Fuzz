@@ -15,7 +15,6 @@ from ufuzz.coverage import (
     CoverageEntryId,
     CoverageState,
     FrozenCheckpointInventory,
-    FrozenMapping,
     InitialEntryLineage,
     LineageResolutionError,
 )
@@ -27,6 +26,7 @@ from ufuzz.retrieval_capability import (
 from ufuzz.state_contract import (
     CertificationStatus,
     DescendantStateCertificate,
+    ExecutableQueryArtifact,
     LogicalSeed,
     MaterializationFailure,
     MaterializationFailureKind,
@@ -198,7 +198,7 @@ class MaterializationProtocol(Protocol[HandleT]):
         self,
         state: EphemeralMaterializedState[HandleT],
         *,
-        query_artifact: FrozenMapping,
+        query_artifact: ExecutableQueryArtifact,
         top_k: int,
     ) -> MaterializationResult[RankedPhysicalRetrieval]: ...
 
@@ -763,7 +763,7 @@ async def observe_materialization(
     seed_id: str,
     protocol: MaterializationProtocol[HandleT],
     materialization: CertifiedMaterialization[HandleT],
-    query_artifact: FrozenMapping,
+    query_artifact: ExecutableQueryArtifact,
     coverage_state: CoverageState,
     top_k: int,
 ) -> MaterializationResult[CertifiedExecutionObservation[HandleT]]:
@@ -776,6 +776,8 @@ async def observe_materialization(
 
     if not isinstance(seed_id, str) or not seed_id:
         raise ValueError("seed_id must be a non-empty string")
+    if not isinstance(query_artifact, ExecutableQueryArtifact):
+        raise TypeError("query_artifact must be an ExecutableQueryArtifact")
     if seed_id != materialization.seed_id:
         return MaterializationResult.failed(
             MaterializationFailure(

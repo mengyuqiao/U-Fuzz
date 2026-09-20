@@ -30,6 +30,7 @@ from ufuzz.state_contract import (
     AffectedTransitionKind,
     CertificationStatus,
     DescendantStateCertificate,
+    ExecutableQueryArtifact,
     LiveLineageState,
     LogicalSeed,
     MaterializationFailure,
@@ -117,6 +118,7 @@ class _SyntheticMaterializer(MaterializationProtocol[_SyntheticHandle]):
         self.root_requests: list[RootMaterializationRequest] = []
         self.executed_artifact_ids: list[str] = []
         self.seen_query_artifacts: list[object] = []
+        self.executed_query_texts: list[str] = []
         self.discarded_handles: list[_SyntheticHandle] = []
         self.retired_handles: list[_SyntheticHandle] = []
         self.last_handle: _SyntheticHandle | None = None
@@ -512,10 +514,11 @@ class _SyntheticMaterializer(MaterializationProtocol[_SyntheticHandle]):
         self,
         state: EphemeralMaterializedState[_SyntheticHandle],
         *,
-        query_artifact,
+        query_artifact: ExecutableQueryArtifact,
         top_k: int,
     ) -> MaterializationResult[RankedPhysicalRetrieval]:
         self.seen_query_artifacts.append(query_artifact)
+        self.executed_query_texts.append(query_artifact.executable_text)
         if self.retrieval_failure is not None:
             return self._failure(self.retrieval_failure, "configured retrieval failure")
         records = list(state.handle.records.items())
@@ -689,7 +692,11 @@ class MaterializationIntegrationTests(unittest.TestCase):
             "synthetic",
             self.root,
             "synthetic-config-v1",
-            {"query_id": "q1", "text": "Where does Ada work?"},
+            ExecutableQueryArtifact.create(
+                artifact_id="query-artifact-q1",
+                executable_text="Where does Ada work?",
+                metadata={"query_id": "q1"},
+            ),
             artifacts,
             self.descendant(records, transition_ids),
             ((self.e2,),),
@@ -802,7 +809,55 @@ class MaterializationIntegrationTests(unittest.TestCase):
         self.assertEqual(observed.value.seed_id, seed.seed_id)
         self.assertEqual(observed.value.materialization, materialized.value)
         self.assertEqual(protocol.seen_query_artifacts, [seed.current_query_artifact])
+        self.assertIs(
+            protocol.seen_query_artifacts[0],
+            seed.current_query_artifact,
+        )
+        self.assertEqual(
+            protocol.executed_query_texts,
+            [seed.current_query_artifact.executable_text],
+        )
         self.assertFalse(materialized.value.state.handle.discarded)
+
+    def test_query_metadata_never_selects_executable_backend_text(self) -> None:
+        first_seed = self.seed()
+        second_seed = replace(
+            first_seed,
+            current_query_artifact=ExecutableQueryArtifact.create(
+                artifact_id="query-artifact-q1-with-other-metadata",
+                executable_text=first_seed.current_query_artifact.executable_text,
+                metadata={
+                    "query_id": "another-query-id",
+                    "text": "metadata must never execute",
+                },
+            ),
+        )
+        protocol = self.protocol()
+        for seed in (first_seed, second_seed):
+            materialized = self.materialize_only(seed, protocol)
+            self.assertIsNone(materialized.failure)
+            observed = self.observe_only(seed, protocol, materialized.value)
+            self.assertIsNone(observed.failure)
+        self.assertEqual(
+            protocol.executed_query_texts,
+            ["Where does Ada work?", "Where does Ada work?"],
+        )
+        self.assertEqual(
+            first_seed.current_query_artifact.executable_text,
+            second_seed.current_query_artifact.executable_text,
+        )
+
+    def test_rematerialization_never_rewrites_persistent_query_artifact(self) -> None:
+        seed = self.seed()
+        original_query = seed.current_query_artifact
+        protocol = self.protocol()
+        first = self.materialize_only(seed, protocol)
+        second = self.materialize_only(seed, protocol)
+        self.assertIsNone(first.failure)
+        self.assertIsNone(second.failure)
+        self.assertIs(seed.current_query_artifact, original_query)
+        self.assertEqual(protocol.seen_query_artifacts, [])
+        self.assertEqual(protocol.executed_query_texts, [])
 
     def test_root_rebinding_ambiguity_and_initialization_inequivalence(self) -> None:
         seed = self.seed()
