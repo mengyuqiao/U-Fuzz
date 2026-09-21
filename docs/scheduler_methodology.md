@@ -1,6 +1,6 @@
 # Scheduler scientific methodology
 
-This document freezes how an RQ1--RQ3 campaign chooses its next scientific
+This document freezes how an RQ1--RQ4 campaign chooses its next scientific
 action. It complements the unified evaluation contract and the existing state,
 materialization, retrieval, coverage, and feedback contracts. It does not
 define a scheduler implementation, runner, backend worker, model client,
@@ -53,7 +53,7 @@ transition, but the child and its complete set remain unschedulable until the
 next round.
 The certified set is immutable for that `LogicalSeed`. Opportunity existence
 depends only on frozen logical seed state, structural index/certification, the
-mutation-space mask, and frozen scientific configuration. Retrieval feedback,
+exact mutation-relation mask, and frozen scientific configuration. Retrieval feedback,
 priority, evaluator output, queue pressure, worker order, GPU batching, and
 wall clock may neither add nor remove an opportunity. Scores control future
 order only.
@@ -260,7 +260,7 @@ priorities, history, coverage, randomness, or model state.
 ## Retrieval depth and production configuration
 
 Numeric retrieval depth `k` remains unbound, but production must choose one
-`k >= 2` shared across all RQ1--RQ3 methods. The same value controls backend
+`k >= 2` shared across all RQ1--RQ4 methods. The same value controls backend
 top-k, initialization and parent/child signatures, `p = 1 - 1/k`, and
 `G_tilde = min(1, G/k)`. It is causal scientific configuration and cannot vary
 for performance reasons.
@@ -296,3 +296,7 @@ evaluator/CFS scientific configuration.
 Worker count, GPU model, batch size, serving queue depth, and replica count stay
 outside scientific identity only when they preserve exact semantic outcomes.
 Their concrete values remain engineering decisions.
+
+## Exact relation-mask authority
+
+Every admitted seed is enumerated only over `MethodSpec.enabled_relations`. Full methods expose six relations, U-Fuzz-Q and U-Fuzz-M expose their exact three-relation masks, and each operator ablation exposes five. Excluded relations are absent from certified enumeration and can never enter the frontier later. The `root-cyclic-retain-all-relation-mask-v2` scheduler and `complete-at-seed-admission-relation-mask-v2` enumeration versions make the exact mask causal provenance. Scores still control order only; they never create or remove opportunities. RQ4 reuses the existing Random, Coverage-Guided, and U-Fuzz policies.

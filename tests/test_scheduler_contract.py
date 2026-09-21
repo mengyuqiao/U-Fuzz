@@ -11,6 +11,7 @@ from ufuzz.evaluation_contract import (
     LLM_AS_JUDGE,
     RANDOM_MUTATION,
     RQ2_CHECKPOINTS,
+    RQ3_OPERATOR_ABLATIONS,
     UFUZZ,
     UFUZZ_M,
     UFUZZ_Q,
@@ -205,16 +206,16 @@ class SchedulerContractTests(unittest.TestCase):
 
     def test_frontier_eligibility_requires_retention_space_and_nonterminal_state(self) -> None:
         item = FrontierItem(self.parent, self.opportunity())
-        self.assertTrue(FrontierEligibility(item, True, MutationSpace.FULL).eligible)
-        self.assertFalse(FrontierEligibility(item, False, MutationSpace.FULL).eligible)
+        self.assertTrue(FrontierEligibility(item, True, UFUZZ.relation_configuration).eligible)
+        self.assertFalse(FrontierEligibility(item, False, UFUZZ.relation_configuration).eligible)
         self.assertFalse(
-            FrontierEligibility(item, True, MutationSpace.MEMORY_ONLY).eligible
+            FrontierEligibility(item, True, UFUZZ_M.relation_configuration).eligible
         )
         self.assertFalse(
             FrontierEligibility(
                 item,
                 True,
-                MutationSpace.FULL,
+                UFUZZ.relation_configuration,
                 OpportunityDisposition.TERMINAL_SUCCESS,
             ).eligible
         )
@@ -222,7 +223,7 @@ class SchedulerContractTests(unittest.TestCase):
     def test_initial_seed_opportunities_are_complete_immutable_and_round_one_eligible(self) -> None:
         enumeration = SeedOpportunityEnumeration(
             self.parent,
-            MutationSpace.FULL,
+            UFUZZ.relation_configuration,
             SeedAdmissionKind.INITIAL,
             0,
             OpportunityEnumerationStatus.CERTIFIED_COMPLETE,
@@ -240,7 +241,7 @@ class SchedulerContractTests(unittest.TestCase):
     def test_child_is_enumerated_at_admission_but_waits_until_next_round(self) -> None:
         enumeration = SeedOpportunityEnumeration(
             self.parent,
-            MutationSpace.FULL,
+            UFUZZ.relation_configuration,
             SeedAdmissionKind.VALID_EXECUTED_CHILD,
             4,
             OpportunityEnumerationStatus.CERTIFIED_COMPLETE,
@@ -252,7 +253,7 @@ class SchedulerContractTests(unittest.TestCase):
     def test_empty_complete_enumeration_exhausts_locally_but_incomplete_does_not(self) -> None:
         complete = SeedOpportunityEnumeration(
             self.parent,
-            MutationSpace.FULL,
+            UFUZZ.relation_configuration,
             SeedAdmissionKind.INITIAL,
             0,
             OpportunityEnumerationStatus.CERTIFIED_COMPLETE,
@@ -260,7 +261,7 @@ class SchedulerContractTests(unittest.TestCase):
         )
         blocked = SeedOpportunityEnumeration(
             self.parent,
-            MutationSpace.FULL,
+            UFUZZ.relation_configuration,
             SeedAdmissionKind.INITIAL,
             0,
             OpportunityEnumerationStatus.BLOCKED_CAPABILITY_FAILURE,
@@ -278,7 +279,7 @@ class SchedulerContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "partial set"):
             SeedOpportunityEnumeration(
                 self.parent,
-                MutationSpace.FULL,
+                UFUZZ.relation_configuration,
                 SeedAdmissionKind.INITIAL,
                 0,
                 OpportunityEnumerationStatus.BLOCKED_CAPABILITY_FAILURE,
@@ -289,7 +290,7 @@ class SchedulerContractTests(unittest.TestCase):
         contract = SCHEDULER_POLICY.opportunity_enumeration
         self.assertIs(
             contract.policy_version,
-            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_V1,
+            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2,
         )
         self.assertEqual(contract.existence_inputs, OPPORTUNITY_EXISTENCE_INPUTS)
         self.assertEqual(
@@ -604,7 +605,7 @@ class SchedulerContractTests(unittest.TestCase):
     def test_retrieval_depth_is_unbound_global_scientific_configuration(self) -> None:
         depth = SCHEDULER_POLICY.retrieval_depth
         self.assertEqual(depth.minimum, 2)
-        self.assertTrue(depth.globally_shared_across_rq1_rq3)
+        self.assertTrue(depth.globally_shared_across_rq1_rq4)
         self.assertIsNone(depth.configured_value)
         self.assertIs(
             depth.production_binding,
@@ -640,8 +641,8 @@ class SchedulerContractTests(unittest.TestCase):
             }.issubset(BASE_PRODUCTION_BINDINGS)
         )
 
-    def test_all_ten_frozen_methods_map_exactly_and_altered_specs_fail_closed(self) -> None:
-        self.assertEqual(len(ALL_METHODS), 10)
+    def test_all_sixteen_frozen_methods_map_exactly_and_altered_specs_fail_closed(self) -> None:
+        self.assertEqual(len(ALL_METHODS), 16)
         expected = {
             RANDOM_MUTATION.method_id: (
                 MutationSpace.FULL,
@@ -681,6 +682,7 @@ class SchedulerContractTests(unittest.TestCase):
                     UFUZZ_WITHOUT_COVERAGE,
                     UFUZZ_WITHOUT_NOVELTY,
                     UFUZZ_WITHOUT_PARENT_DIVERGENCE,
+                    *RQ3_OPERATOR_ABLATIONS,
                 )
             },
         }
@@ -703,6 +705,33 @@ class SchedulerContractTests(unittest.TestCase):
                     UFUZZ,
                     feedback_components=UFUZZ_WITHOUT_NOVELTY.feedback_components,
                 )
+            )
+
+    def test_exact_relation_mask_governs_enumeration_and_frontier_forever(self) -> None:
+        for method in (UFUZZ, UFUZZ_Q, UFUZZ_M, *RQ3_OPERATOR_ABLATIONS):
+            self.assertIn(self.opportunity().relation, method.enabled_relations) if (
+                MutationRelation.MEANING_PRESERVING_QUERY in method.enabled_relations
+            ) else self.assertNotIn(
+                self.opportunity().relation, method.enabled_relations
+            )
+        without_mpq = next(
+            method for method in RQ3_OPERATOR_ABLATIONS
+            if MutationRelation.MEANING_PRESERVING_QUERY not in method.enabled_relations
+        )
+        item = FrontierItem(self.parent, self.opportunity())
+        self.assertFalse(
+            FrontierEligibility(
+                item, True, without_mpq.relation_configuration
+            ).eligible
+        )
+        with self.assertRaisesRegex(ValueError, "relation"):
+            SeedOpportunityEnumeration(
+                self.parent,
+                without_mpq.relation_configuration,
+                SeedAdmissionKind.INITIAL,
+                0,
+                OpportunityEnumerationStatus.CERTIFIED_COMPLETE,
+                frozenset({self.opportunity()}),
             )
 
     def test_scheduler_visible_structures_have_no_evaluator_payload_fields(self) -> None:

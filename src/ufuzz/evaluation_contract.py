@@ -1,4 +1,4 @@
-"""Pure scientific campaign and RQ-view contract for RQ1, RQ2, and RQ3.
+"""Pure scientific campaign and RQ-view contract for RQ1 through RQ4.
 
 This module describes which unique campaigns must eventually be executed and
 how each research question views those campaigns.  It contains no scheduler,
@@ -27,6 +27,7 @@ class Backend(StrEnum):
     MEM0 = "mem0"
     AMEM = "a-mem"
     GRAPHITI = "graphiti"
+    MEMOS = "memos"
 
 
 class MutationSpace(StrEnum):
@@ -71,11 +72,40 @@ class ResearchQuestion(StrEnum):
     RQ1 = "rq1"
     RQ2 = "rq2"
     RQ3 = "rq3"
+    RQ4 = "rq4"
 
 
 class MetricName(StrEnum):
     UF_AT_B = "UF@B"
     COV_AT_B = "Cov@B"
+
+
+RQ4_METRICS = (MetricName.UF_AT_B, MetricName.COV_AT_B)
+RQ4_INTERPRETATION_EVIDENCE = frozenset(
+    {"e0_cardinality", "retrievable_entry_granularity_profile_identity"}
+)
+
+
+class NativeMemoryLLMProvider(StrEnum):
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GOOGLE = "google"
+
+
+@dataclass(frozen=True, slots=True)
+class NativeMemoryLLMCondition:
+    """Planning identity only; exact production model manifests remain unbound."""
+
+    provider: NativeMemoryLLMProvider
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.provider, NativeMemoryLLMProvider):
+            raise TypeError("provider must be a NativeMemoryLLMProvider")
+
+
+NATIVE_MEMORY_LLM_CONDITIONS = tuple(
+    NativeMemoryLLMCondition(provider) for provider in NativeMemoryLLMProvider
+)
 
 
 QUERY_MUTATION_RELATIONS = frozenset(
@@ -92,6 +122,7 @@ MEMORY_MUTATION_RELATIONS = frozenset(
         MutationRelation.UNRELATED_CHANGE,
     }
 )
+ALL_MUTATION_RELATIONS = QUERY_MUTATION_RELATIONS | MEMORY_MUTATION_RELATIONS
 
 
 def mutation_relations_for(space: MutationSpace) -> frozenset[MutationRelation]:
@@ -101,7 +132,52 @@ def mutation_relations_for(space: MutationSpace) -> frozenset[MutationRelation]:
         return QUERY_MUTATION_RELATIONS
     if space is MutationSpace.MEMORY_ONLY:
         return MEMORY_MUTATION_RELATIONS
-    return QUERY_MUTATION_RELATIONS | MEMORY_MUTATION_RELATIONS
+    return ALL_MUTATION_RELATIONS
+
+
+@dataclass(frozen=True, slots=True)
+class MutationRelationConfiguration:
+    """Exact causal mutation-relation mask for a frozen method."""
+
+    broad_space: MutationSpace
+    enabled_relations: frozenset[MutationRelation]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.broad_space, MutationSpace):
+            raise TypeError("broad_space must be a MutationSpace")
+        relations = frozenset(self.enabled_relations)
+        if any(not isinstance(item, MutationRelation) for item in relations):
+            raise TypeError("enabled_relations must contain MutationRelation values")
+        object.__setattr__(self, "enabled_relations", relations)
+        canonical = mutation_relations_for(self.broad_space)
+        if self.broad_space is MutationSpace.FULL:
+            if relations != canonical and not (
+                len(relations) == 5 and relations < ALL_MUTATION_RELATIONS
+            ):
+                raise ValueError(
+                    "FULL permits all six relations or one leave-one-out mask"
+                )
+        elif relations != canonical:
+            raise ValueError("restricted spaces require their exact canonical mask")
+
+
+FULL_RELATION_CONFIGURATION = MutationRelationConfiguration(
+    MutationSpace.FULL, ALL_MUTATION_RELATIONS
+)
+QUERY_ONLY_RELATION_CONFIGURATION = MutationRelationConfiguration(
+    MutationSpace.QUERY_ONLY, QUERY_MUTATION_RELATIONS
+)
+MEMORY_ONLY_RELATION_CONFIGURATION = MutationRelationConfiguration(
+    MutationSpace.MEMORY_ONLY, MEMORY_MUTATION_RELATIONS
+)
+
+
+def without_relation(relation: MutationRelation) -> MutationRelationConfiguration:
+    if not isinstance(relation, MutationRelation):
+        raise TypeError("relation must be a MutationRelation")
+    return MutationRelationConfiguration(
+        MutationSpace.FULL, ALL_MUTATION_RELATIONS - {relation}
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,7 +211,7 @@ class MethodScientificKey:
 
     method_id: str
     selection_family: SelectionFamily
-    mutation_space: MutationSpace
+    relation_configuration: MutationRelationConfiguration
     online_search_signal: OnlineSearchSignal
     feedback_components: FeedbackComponentMask | None
     feedback_combination_rule: FeedbackCombinationRule | None
@@ -145,7 +221,11 @@ class MethodScientificKey:
             raise ValueError("method_id must be a non-empty string")
         for name, value, expected in (
             ("selection_family", self.selection_family, SelectionFamily),
-            ("mutation_space", self.mutation_space, MutationSpace),
+            (
+                "relation_configuration",
+                self.relation_configuration,
+                MutationRelationConfiguration,
+            ),
             ("online_search_signal", self.online_search_signal, OnlineSearchSignal),
         ):
             if not isinstance(value, expected):
@@ -167,7 +247,7 @@ class MethodSpec:
     method_id: str
     display_name: str
     selection_family: SelectionFamily
-    mutation_space: MutationSpace
+    relation_configuration: MutationRelationConfiguration
     fairness_group: FairnessGroup
     online_search_signal: OnlineSearchSignal
     feedback_components: FeedbackComponentMask | None = None
@@ -180,7 +260,11 @@ class MethodSpec:
             raise ValueError("display_name must be a non-empty string")
         for name, value, expected in (
             ("selection_family", self.selection_family, SelectionFamily),
-            ("mutation_space", self.mutation_space, MutationSpace),
+            (
+                "relation_configuration",
+                self.relation_configuration,
+                MutationRelationConfiguration,
+            ),
             ("fairness_group", self.fairness_group, FairnessGroup),
             ("online_search_signal", self.online_search_signal, OnlineSearchSignal),
         ):
@@ -205,13 +289,28 @@ class MethodSpec:
                 raise ValueError("restricted methods cannot use the full mutation space")
         elif self.mutation_space is not MutationSpace.FULL:
             raise ValueError("full-space methods must use the full mutation space")
+        if len(self.enabled_relations) == 5:
+            if self.selection_family is not SelectionFamily.U_FUZZ or (
+                self.fairness_group is not FairnessGroup.FULL_SPACE_ABLATION
+            ):
+                raise ValueError("leave-one-out masks are U-Fuzz ablations")
+            if self.feedback_components != FULL_UFUZZ_FEEDBACK:
+                raise ValueError("operator ablations retain full U-Fuzz feedback")
+
+    @property
+    def mutation_space(self) -> MutationSpace:
+        return self.relation_configuration.broad_space
+
+    @property
+    def enabled_relations(self) -> frozenset[MutationRelation]:
+        return self.relation_configuration.enabled_relations
 
     @property
     def scientific_key(self) -> MethodScientificKey:
         return MethodScientificKey(
             self.method_id,
             self.selection_family,
-            self.mutation_space,
+            self.relation_configuration,
             self.online_search_signal,
             self.feedback_components,
             self.feedback_combination_rule,
@@ -222,7 +321,7 @@ RANDOM_MUTATION = MethodSpec(
     "random-mutation",
     "Random Mutation",
     SelectionFamily.RANDOM_MUTATION,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_PRIMARY,
     OnlineSearchSignal.NONE,
 )
@@ -230,7 +329,7 @@ UNGUIDED_LLM = MethodSpec(
     "unguided-llm",
     "Unguided LLM",
     SelectionFamily.UNGUIDED_LLM,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_PRIMARY,
     OnlineSearchSignal.LLM_EXPLORATION_NO_RETRIEVAL_FEEDBACK,
 )
@@ -238,7 +337,7 @@ LLM_AS_JUDGE = MethodSpec(
     "llm-as-judge",
     "LLM-as-Judge",
     SelectionFamily.LLM_AS_JUDGE,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_PRIMARY,
     OnlineSearchSignal.ONLINE_LLM_JUDGE,
 )
@@ -246,7 +345,7 @@ COVERAGE_GUIDED = MethodSpec(
     "coverage-guided",
     "Coverage-Guided",
     SelectionFamily.COVERAGE_GUIDED,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_PRIMARY,
     OnlineSearchSignal.COVERAGE_GAIN_ONLY,
 )
@@ -254,7 +353,7 @@ UFUZZ_Q = MethodSpec(
     "ufuzz-q",
     "U-Fuzz-Q",
     SelectionFamily.U_FUZZ,
-    MutationSpace.QUERY_ONLY,
+    QUERY_ONLY_RELATION_CONFIGURATION,
     FairnessGroup.RESTRICTED_SPACE,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     FULL_UFUZZ_FEEDBACK,
@@ -264,7 +363,7 @@ UFUZZ_M = MethodSpec(
     "ufuzz-m",
     "U-Fuzz-M",
     SelectionFamily.U_FUZZ,
-    MutationSpace.MEMORY_ONLY,
+    MEMORY_ONLY_RELATION_CONFIGURATION,
     FairnessGroup.RESTRICTED_SPACE,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     FULL_UFUZZ_FEEDBACK,
@@ -274,17 +373,60 @@ UFUZZ = MethodSpec(
     "ufuzz",
     "U-Fuzz",
     SelectionFamily.U_FUZZ,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_PRIMARY,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     FULL_UFUZZ_FEEDBACK,
     FeedbackCombinationRule.ZERO_DISABLED_WITHOUT_RENORMALIZATION,
 )
+
+
+def _operator_ablation(
+    method_id: str, display_name: str, removed: MutationRelation
+) -> MethodSpec:
+    return MethodSpec(
+        method_id,
+        display_name,
+        SelectionFamily.U_FUZZ,
+        without_relation(removed),
+        FairnessGroup.FULL_SPACE_ABLATION,
+        OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
+        FULL_UFUZZ_FEEDBACK,
+        FeedbackCombinationRule.ZERO_DISABLED_WITHOUT_RENORMALIZATION,
+    )
+
+
+UFUZZ_WITHOUT_MEANING_PRESERVING_QUERY = _operator_ablation(
+    "ufuzz-without-meaning-preserving-query",
+    "U-Fuzz w/o Meaning-Preserving Query",
+    MutationRelation.MEANING_PRESERVING_QUERY,
+)
+UFUZZ_WITHOUT_TARGET_CHANGING_QUERY = _operator_ablation(
+    "ufuzz-without-target-changing-query",
+    "U-Fuzz w/o Target-Changing Query",
+    MutationRelation.TARGET_CHANGING_QUERY,
+)
+UFUZZ_WITHOUT_UNSUPPORTED_QUERY = _operator_ablation(
+    "ufuzz-without-unsupported-query",
+    "U-Fuzz w/o Unsupported Query",
+    MutationRelation.UNSUPPORTED_QUERY,
+)
+UFUZZ_WITHOUT_UPDATE = _operator_ablation(
+    "ufuzz-without-update", "U-Fuzz w/o Update", MutationRelation.UPDATE
+)
+UFUZZ_WITHOUT_DELETION = _operator_ablation(
+    "ufuzz-without-deletion", "U-Fuzz w/o Deletion", MutationRelation.DELETION
+)
+UFUZZ_WITHOUT_UNRELATED_CHANGE = _operator_ablation(
+    "ufuzz-without-unrelated-change",
+    "U-Fuzz w/o Unrelated Change",
+    MutationRelation.UNRELATED_CHANGE,
+)
 UFUZZ_WITHOUT_COVERAGE = MethodSpec(
     "ufuzz-without-coverage",
     "U-Fuzz w/o Coverage",
     SelectionFamily.U_FUZZ,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_ABLATION,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     WITHOUT_COVERAGE,
@@ -294,7 +436,7 @@ UFUZZ_WITHOUT_NOVELTY = MethodSpec(
     "ufuzz-without-novelty",
     "U-Fuzz w/o Novelty",
     SelectionFamily.U_FUZZ,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_ABLATION,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     WITHOUT_NOVELTY,
@@ -304,7 +446,7 @@ UFUZZ_WITHOUT_PARENT_DIVERGENCE = MethodSpec(
     "ufuzz-without-parent-divergence",
     "U-Fuzz w/o Parent Divergence",
     SelectionFamily.U_FUZZ,
-    MutationSpace.FULL,
+    FULL_RELATION_CONFIGURATION,
     FairnessGroup.FULL_SPACE_ABLATION,
     OnlineSearchSignal.U_FUZZ_RETRIEVAL_FEEDBACK,
     WITHOUT_PARENT_DIVERGENCE,
@@ -321,27 +463,50 @@ RQ1_METHODS = (
     UFUZZ,
 )
 RQ2_METHODS = (UFUZZ_Q, UFUZZ_M, UFUZZ)
-RQ3_METHODS = (
-    COVERAGE_GUIDED,
-    UFUZZ_WITHOUT_COVERAGE,
-    UFUZZ_WITHOUT_NOVELTY,
-    UFUZZ_WITHOUT_PARENT_DIVERGENCE,
+RQ3_REUSED_METHODS = (
     UFUZZ,
+    UFUZZ_Q,
+    UFUZZ_M,
+    COVERAGE_GUIDED,
+    RANDOM_MUTATION,
 )
-NEW_RQ3_METHODS = (
+RQ3_OPERATOR_ABLATIONS = (
+    UFUZZ_WITHOUT_MEANING_PRESERVING_QUERY,
+    UFUZZ_WITHOUT_TARGET_CHANGING_QUERY,
+    UFUZZ_WITHOUT_UNSUPPORTED_QUERY,
+    UFUZZ_WITHOUT_UPDATE,
+    UFUZZ_WITHOUT_DELETION,
+    UFUZZ_WITHOUT_UNRELATED_CHANGE,
+)
+RQ3_FEEDBACK_ABLATIONS = (
     UFUZZ_WITHOUT_COVERAGE,
     UFUZZ_WITHOUT_NOVELTY,
     UFUZZ_WITHOUT_PARENT_DIVERGENCE,
 )
+NEW_RQ3_METHODS = RQ3_OPERATOR_ABLATIONS + RQ3_FEEDBACK_ABLATIONS
+RQ3_METHODS = RQ3_REUSED_METHODS + NEW_RQ3_METHODS
+RQ4_METHODS = (RANDOM_MUTATION, COVERAGE_GUIDED, UFUZZ)
 ALL_METHODS = RQ1_METHODS + NEW_RQ3_METHODS
 METHODS_BY_ID = MappingProxyType({method.method_id: method for method in ALL_METHODS})
+RQ1_METHOD_SCIENTIFIC_KEYS = frozenset(
+    method.scientific_key for method in RQ1_METHODS
+)
+NEW_RQ3_METHOD_SCIENTIFIC_KEYS = frozenset(
+    method.scientific_key for method in NEW_RQ3_METHODS
+)
+RQ4_METHOD_SCIENTIFIC_KEYS = frozenset(
+    method.scientific_key for method in RQ4_METHODS
+)
 
-BACKENDS = (Backend.MEM0, Backend.AMEM, Backend.GRAPHITI)
+BACKENDS = (Backend.MEM0, Backend.AMEM, Backend.GRAPHITI, Backend.MEMOS)
+RQ4_BACKENDS = (Backend.MEM0, Backend.GRAPHITI)
 REPETITION_INDICES = (0, 1, 2)
 RQ2_CHECKPOINTS = tuple(range(1000, 8001, 1000))
 BENCHMARK_MAX_BUDGET = MappingProxyType(
     {Benchmark.LOCOMO: 8000, Benchmark.LONGMEMEVAL_S: 4000}
 )
+RQ3_BUDGET = 4000
+RQ4_BUDGET = 2000
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -363,6 +528,7 @@ class CampaignKey:
     method: MethodScientificKey
     repetition_index: int
     max_budget: int
+    native_memory_llm_condition: NativeMemoryLLMCondition | None = None
     configuration_bindings: tuple[ConfigurationBinding, ...] = ()
 
 
@@ -375,6 +541,7 @@ class CampaignSpec:
     method: MethodSpec
     repetition_index: int
     max_budget: int
+    native_memory_llm_condition: NativeMemoryLLMCondition | None = None
     configuration_bindings: tuple[ConfigurationBinding, ...] = ()
 
     def __post_init__(self) -> None:
@@ -388,9 +555,33 @@ class CampaignSpec:
             raise ValueError("repetition index must be one of 0, 1, 2")
         if isinstance(self.max_budget, bool) or not isinstance(self.max_budget, int):
             raise TypeError("max budget must be an integer")
-        expected_budget = BENCHMARK_MAX_BUDGET[self.benchmark]
-        if self.max_budget != expected_budget:
-            raise ValueError("campaign max budget differs from the benchmark contract")
+        condition = self.native_memory_llm_condition
+        if condition is None:
+            if self.benchmark is Benchmark.LONGMEMEVAL_S:
+                allowed = (
+                    self.method.scientific_key in RQ1_METHOD_SCIENTIFIC_KEYS
+                    and self.max_budget == 4000
+                )
+            elif self.method.scientific_key in RQ1_METHOD_SCIENTIFIC_KEYS:
+                allowed = self.max_budget == 8000
+            else:
+                allowed = (
+                    self.method.scientific_key in NEW_RQ3_METHOD_SCIENTIFIC_KEYS
+                    and self.max_budget == RQ3_BUDGET
+                )
+        else:
+            if not isinstance(condition, NativeMemoryLLMCondition):
+                raise TypeError(
+                    "native_memory_llm_condition must be a NativeMemoryLLMCondition"
+                )
+            allowed = (
+                self.benchmark is Benchmark.LOCOMO
+                and self.backend in RQ4_BACKENDS
+                and self.method.scientific_key in RQ4_METHOD_SCIENTIFIC_KEYS
+                and self.max_budget == RQ4_BUDGET
+            )
+        if not allowed:
+            raise ValueError("campaign fields do not match a frozen experiment role")
         bindings = tuple(sorted(tuple(self.configuration_bindings)))
         if any(not isinstance(item, ConfigurationBinding) for item in bindings):
             raise TypeError("configuration bindings must be ConfigurationBinding values")
@@ -407,6 +598,7 @@ class CampaignSpec:
             self.method.scientific_key,
             self.repetition_index,
             self.max_budget,
+            self.native_memory_llm_condition,
             self.configuration_bindings,
         )
 
@@ -443,6 +635,7 @@ class EvaluationPlan:
     rq1: tuple[RQViewEntry, ...]
     rq2: tuple[RQViewEntry, ...]
     rq3: tuple[RQViewEntry, ...]
+    rq4: tuple[RQViewEntry, ...]
 
     def __post_init__(self) -> None:
         campaigns = tuple(self.campaigns)
@@ -450,53 +643,91 @@ class EvaluationPlan:
         if len(set(keys)) != len(keys):
             raise ValueError("evaluation plan contains duplicate scientific campaigns")
         canonical = {campaign.scientific_key: campaign for campaign in campaigns}
-        for entry in self.rq1 + self.rq2 + self.rq3:
+        for entry in self.rq1 + self.rq2 + self.rq3 + self.rq4:
             if canonical.get(entry.campaign.scientific_key) is not entry.campaign:
                 raise ValueError("RQ views must reference canonical campaign objects")
         object.__setattr__(self, "campaigns", campaigns)
         object.__setattr__(self, "rq1", tuple(self.rq1))
         object.__setattr__(self, "rq2", tuple(self.rq2))
         object.__setattr__(self, "rq3", tuple(self.rq3))
+        object.__setattr__(self, "rq4", tuple(self.rq4))
 
     @property
     def total_planned_valid_executions(self) -> int:
         return sum(campaign.max_budget for campaign in self.campaigns)
 
+    @property
+    def rq1_rq3_campaigns(self) -> tuple[CampaignSpec, ...]:
+        return tuple(
+            campaign for campaign in self.campaigns
+            if campaign.native_memory_llm_condition is None
+        )
+
+    @property
+    def rq4_campaigns(self) -> tuple[CampaignSpec, ...]:
+        return tuple(
+            campaign for campaign in self.campaigns
+            if campaign.native_memory_llm_condition is not None
+        )
+
 
 def build_evaluation_plan() -> EvaluationPlan:
-    """Build the deduplicated 153-campaign plan and its three RQ views."""
+    """Build the deduplicated 330-campaign plan and its four RQ views."""
 
     campaigns: dict[CampaignKey, CampaignSpec] = {}
 
-    def add(benchmark: Benchmark, backend: Backend, method: MethodSpec, rep: int) -> None:
+    def add(
+        benchmark: Benchmark,
+        backend: Backend,
+        method: MethodSpec,
+        repetition: int,
+        budget: int,
+        condition: NativeMemoryLLMCondition | None = None,
+    ) -> CampaignSpec:
         spec = CampaignSpec(
-            benchmark,
-            backend,
-            method,
-            rep,
-            BENCHMARK_MAX_BUDGET[benchmark],
+            benchmark, backend, method, repetition, budget, condition
         )
-        campaigns.setdefault(spec.scientific_key, spec)
+        return campaigns.setdefault(spec.scientific_key, spec)
 
     for benchmark in Benchmark:
         for backend in BACKENDS:
             for method in RQ1_METHODS:
                 for repetition in REPETITION_INDICES:
-                    add(benchmark, backend, method, repetition)
+                    add(
+                        benchmark,
+                        backend,
+                        method,
+                        repetition,
+                        BENCHMARK_MAX_BUDGET[benchmark],
+                    )
     for backend in BACKENDS:
         for method in NEW_RQ3_METHODS:
             for repetition in REPETITION_INDICES:
-                add(Benchmark.LOCOMO, backend, method, repetition)
+                add(Benchmark.LOCOMO, backend, method, repetition, RQ3_BUDGET)
+
+    for backend in RQ4_BACKENDS:
+        for condition in NATIVE_MEMORY_LLM_CONDITIONS:
+            for method in RQ4_METHODS:
+                for repetition in REPETITION_INDICES:
+                    add(
+                        Benchmark.LOCOMO,
+                        backend,
+                        method,
+                        repetition,
+                        RQ4_BUDGET,
+                        condition,
+                    )
 
     def get(
-        benchmark: Benchmark, backend: Backend, method: MethodSpec, repetition: int
+        benchmark: Benchmark,
+        backend: Backend,
+        method: MethodSpec,
+        repetition: int,
+        budget: int,
+        condition: NativeMemoryLLMCondition | None = None,
     ) -> CampaignSpec:
         key = CampaignSpec(
-            benchmark,
-            backend,
-            method,
-            repetition,
-            BENCHMARK_MAX_BUDGET[benchmark],
+            benchmark, backend, method, repetition, budget, condition
         ).scientific_key
         return campaigns[key]
 
@@ -505,7 +736,13 @@ def build_evaluation_plan() -> EvaluationPlan:
             ResearchQuestion.RQ1,
             method.method_id,
             BENCHMARK_MAX_BUDGET[benchmark],
-            get(benchmark, backend, method, repetition),
+            get(
+                benchmark,
+                backend,
+                method,
+                repetition,
+                BENCHMARK_MAX_BUDGET[benchmark],
+            ),
         )
         for benchmark in Benchmark
         for backend in BACKENDS
@@ -517,7 +754,7 @@ def build_evaluation_plan() -> EvaluationPlan:
             ResearchQuestion.RQ2,
             method.method_id,
             checkpoint,
-            get(Benchmark.LOCOMO, backend, method, repetition),
+            get(Benchmark.LOCOMO, backend, method, repetition, 8000),
         )
         for backend in BACKENDS
         for method in RQ2_METHODS
@@ -528,11 +765,36 @@ def build_evaluation_plan() -> EvaluationPlan:
         RQViewEntry(
             ResearchQuestion.RQ3,
             method.method_id,
-            8000,
-            get(Benchmark.LOCOMO, backend, method, repetition),
+            RQ3_BUDGET,
+            get(
+                Benchmark.LOCOMO,
+                backend,
+                method,
+                repetition,
+                8000 if method in RQ3_REUSED_METHODS else RQ3_BUDGET,
+            ),
         )
         for backend in BACKENDS
         for method in RQ3_METHODS
+        for repetition in REPETITION_INDICES
+    )
+    rq4 = tuple(
+        RQViewEntry(
+            ResearchQuestion.RQ4,
+            method.method_id,
+            RQ4_BUDGET,
+            get(
+                Benchmark.LOCOMO,
+                backend,
+                method,
+                repetition,
+                RQ4_BUDGET,
+                condition,
+            ),
+        )
+        for backend in RQ4_BACKENDS
+        for condition in NATIVE_MEMORY_LLM_CONDITIONS
+        for method in RQ4_METHODS
         for repetition in REPETITION_INDICES
     )
     ordered_campaigns = tuple(
@@ -542,11 +804,15 @@ def build_evaluation_plan() -> EvaluationPlan:
                 item.benchmark.value,
                 item.backend.value,
                 item.method.method_id,
+                item.native_memory_llm_condition.provider.value
+                if item.native_memory_llm_condition
+                else "",
+                item.max_budget,
                 item.repetition_index,
             ),
         )
     )
-    return EvaluationPlan(ordered_campaigns, rq1, rq2, rq3)
+    return EvaluationPlan(ordered_campaigns, rq1, rq2, rq3, rq4)
 
 
 @dataclass(frozen=True, slots=True)
@@ -613,7 +879,7 @@ class EngineeringTarget:
         return self.planned_valid_executions / self.wall_clock_seconds
 
 
-ENGINEERING_TARGET = EngineeringTarget(6, 24 * 60 * 60, 972000)
+ENGINEERING_TARGET = EngineeringTarget(6, 24 * 60 * 60, 1_440_000)
 
 
 EVALUATION_PLAN = build_evaluation_plan()

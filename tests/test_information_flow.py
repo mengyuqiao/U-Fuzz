@@ -31,6 +31,13 @@ from ufuzz.materialization import (
     RootMaterializationRequest,
     TransitionReplay,
 )
+from ufuzz.evaluation_contract import Backend, NativeMemoryLLMProvider
+from ufuzz.production_config_contract import (
+    InvariantBackendSubstrateManifest,
+    NativeMemoryLLMConfigurationManifest,
+    ProviderSubstrateBinding,
+    RQ4EmbeddingControlEvidence,
+)
 from ufuzz.retrieval_feedback import (
     BehaviorHistory,
     MutationRelation,
@@ -91,6 +98,11 @@ EVALUATOR_KEYS = {
     "oracle_verdict",
     "failure_surface",
     "uf_at_b",
+    "api_key",
+    "api_secret",
+    "bearer_token",
+    "credential",
+    "credentials",
 }
 
 
@@ -287,6 +299,56 @@ class _GraphitiObjectsByUuid:
 
 
 class InformationFlowRegressionTests(unittest.TestCase):
+    def test_native_memory_llm_manifest_contains_configuration_not_credentials(self) -> None:
+        manifest = NativeMemoryLLMConfigurationManifest(
+            NativeMemoryLLMProvider.OPENAI,
+            "model-id",
+            "model-revision",
+            b'{"system":"memory extraction"}',
+            b'{"type":"object"}',
+            "parser-v1",
+            b'{"temperature":0}',
+            b'{"transport_retries":3,"resamples":2}',
+            "api-runtime-v1",
+        )
+        self.assertSearchSafe(manifest)
+        self.assertFalse(
+            EVALUATOR_KEYS.intersection(
+                field.name.casefold() for field in fields(manifest)
+            )
+        )
+        artifact = manifest.artifact_bytes.lower()
+        for forbidden in (b"api_key", b"api_secret", b"bearer_token", b"credential"):
+            self.assertNotIn(forbidden, artifact)
+
+    def test_rq4_substrate_evidence_contains_public_configuration_not_credentials(self) -> None:
+        substrate = InvariantBackendSubstrateManifest(
+            Backend.MEM0,
+            "mem0-source-2.0.12",
+            "native-profile-b-v1",
+            b'{"database":"isolated-qdrant"}',
+            "huggingface",
+            "embedding-model-id",
+            "embedding-revision",
+            768,
+            "l2-normalized",
+            b'{"search":"dense-cosine"}',
+            b'{"reranker":"none"}',
+            10,
+            "isolated-replay-v1",
+        )
+        evidence = RQ4EmbeddingControlEvidence(
+            Backend.MEM0,
+            tuple(
+                ProviderSubstrateBinding(provider, substrate)
+                for provider in NativeMemoryLLMProvider
+            ),
+        )
+        self.assertSearchSafe(evidence)
+        artifact = substrate.artifact_bytes.lower()
+        for forbidden in (b"api_key", b"api_secret", b"bearer_token", b"credential"):
+            self.assertNotIn(forbidden, artifact)
+
     def assertSearchSafe(self, value: Any) -> None:
         self.assertEqual(list(_structured_key_paths(value)), [])
 

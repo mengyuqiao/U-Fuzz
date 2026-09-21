@@ -1,226 +1,117 @@
-# Unified evaluation contract for RQ1, RQ2, and RQ3
+# Unified RQ1-RQ4 evaluation contract
 
-This contract separates a **scientific campaign** from a **research-question
-view**. A scientific campaign is identified by its benchmark, backend, causal
-method key, repetition index, maximum valid-execution budget, and the frozen
-model/backend/runtime configuration identities that must be supplied before a
-production run. The causal method key contains the stable method ID, selection
-family, mutation space, online search signal, feedback-component mask, and
-feedback-combination rule. Presentation fields such as method display name,
-fairness-group annotation, RQ membership, table-row label, and observational
-checkpoint are excluded. Changing presentation metadata therefore does not
-create a new raw campaign, while changing causal method semantics does.
+This document and `src/ufuzz/evaluation_contract.py` are authoritative for the scientific campaign topology. A campaign is one raw adaptive trajectory. Its scientific key contains benchmark, backend, causal method key, repetition index, maximum budget, the optional RQ4 provider-family condition, and normalized production configuration bindings. The causal method key includes the exact enabled-relation configuration. Display names, fairness annotations, RQ membership, table labels, observational checkpoints, and engineering settings are excluded. A view points to a campaign and checkpoint; equal scientific configurations reuse the same canonical campaign object rather than copying results or rerunning.
 
-Configuration bindings remain causal scientific identity. Their ordering is
-canonicalized, but changing a bound configuration ID changes the campaign key,
-and duplicate binding dimensions are invalid. The exported `EVALUATION_PLAN`
-is the canonical **planning topology** for RQ1-RQ3: it fixes cardinality, reuse,
-budgets, methods, backends, repetitions, and views with empty configuration
-bindings. It is not sufficient authorization for production. A later explicit
-pre-run freeze must supply and approve every required configuration binding;
-merely observing some nonempty bindings is not a production-readiness test.
+Configuration bindings are causal identity. Binding order is canonicalized, changing a configuration ID changes the campaign key, and duplicate dimensions are rejected. `EVALUATION_PLAN` is a configuration-unbound planning topology; empty bindings do not establish production readiness.
 
-RQ membership is view metadata. If two RQ entries have the same scientific
-campaign configuration, they refer to one raw campaign and one trajectory;
-they are never rerun for each RQ. RQ2 checkpoints are also view metadata: the
-maximum budget remains campaign identity, while each checkpoint selects a
-prefix of that one trajectory.
+## Shared rules
 
-The contract plans campaigns only. It does not implement scheduling, mutation
-generation, materialization, evaluator execution, logging, or plotting. RQ4 is
-pending a separate freeze and contributes no campaign, budget, provider, or
-metric here.
+Repetitions are exactly 0, 1, and 2. Reported values use the arithmetic mean and sample standard deviation (`ddof=1`) over those three raw values; values and standard deviations are neither interpolated, smoothed, nor rescaled.
+
+One unit of B is consumed only after semantic validation, exact certified materialization and transition where applicable, selected public retrieval, complete returned-object lineage resolution, and construction of a valid `ResolvedRetrievalObservation`. Initialization, materialization/replay work, invalid generation, inapplicability, uncertifiable transition, semantic drift, retrieval failure, and unresolved returned lineage consume zero B under the frozen failure taxonomy. Response generation and final evaluation occur after this boundary. Evaluator failure never refunds B.
+
+`UF@B` is the number of distinct evaluator-confirmed canonical fault signatures among executions 1 through B, deduplicated within the campaign rather than summed across subsets. A canonical fault signature contains `root_checkpoint_id`, `mutation_relation`, `canonical_query_intent`, `canonical_mutation_target`, and `failure_surface`. `Cov@B` is cumulative reached frozen E0 lineage divided by the campaign's frozen E0 cardinality. Deleted E0 entries remain in the denominator, and replacement, merge, and split lineage follow the frozen backend contracts. Coverage is backend-entry-granularity specific and is primarily compared within one backend.
+
+The primary backends for RQ1-RQ3 are Mem0, A-Mem, Graphiti, and MemOS. MemOS is planning identity only until its native capability, materialization, replay, lineage, isolation, and cleanup proofs are complete.
+
+Methods carry an exact immutable relation configuration. Full methods enable all six frozen `MutationRelation` values. U-Fuzz-Q enables exactly the three query relations; U-Fuzz-M enables exactly the three memory relations. A leave-one-operator-out method has broad space FULL and exactly five relations. The exact relation set is causal campaign identity.
 
 ## RQ1: fixed-budget effectiveness
 
-RQ1 asks how effectively U-Fuzz discovers memory-use failures under a fixed
-valid-execution budget. It uses LoCoMo and LongMemEval-S, the Mem0, A-Mem, and
-Graphiti backends, and repetition indices 0, 1, and 2. LoCoMo campaigns have
-`B_max = 8000`; LongMemEval-S campaigns have `B_max = 4000`.
+RQ1 uses LoCoMo at B=8000 and LongMemEval-S at B=4000, four backends, three repetitions, and exactly seven methods:
 
-The seven displayed methods and stable identifiers are:
+1. Random Mutation
+2. Unguided LLM
+3. LLM-as-Judge
+4. Coverage-Guided
+5. U-Fuzz-Q
+6. U-Fuzz-M
+7. U-Fuzz
 
-| Method | Identifier | Mutation space |
-|---|---|---|
-| Random Mutation | `random-mutation` | Full |
-| Unguided LLM | `unguided-llm` | Full |
-| LLM-as-Judge | `llm-as-judge` | Full |
-| Coverage-Guided | `coverage-guided` | Full |
-| U-Fuzz-Q | `ufuzz-q` | Query only |
-| U-Fuzz-M | `ufuzz-m` | Memory only |
-| U-Fuzz | `ufuzz` | Full |
+Random Mutation, Unguided LLM, LLM-as-Judge, Coverage-Guided, and U-Fuzz use the same full six-relation mutation space and shared realization, applicability, certification, materialization, B, reader, and evaluator contracts. U-Fuzz-Q and U-Fuzz-M are explicitly restricted-space variants.
 
-Random Mutation, Unguided LLM, LLM-as-Judge, Coverage-Guided, and U-Fuzz form
-the same-full-space fairness group. They share the complete eligible initial
-seed corpus, all six mutation relations, applicability and semantic validation,
-materialization and valid-execution rules, candidate-generation limits, final
-evaluator, backend, and benchmark. They differ only in their defined
-exploration or prioritization logic. U-Fuzz-Q and U-Fuzz-M are restricted-space
-variants and must never be described as using the same mutation space as the
-five full-space methods.
+Each benchmark contributes `7 × 4 × 3 = 84` campaigns. RQ1 therefore has 168 campaigns and `84×8000 + 84×4000 = 1,008,000` planned valid executions.
 
-Query-only permits Meaning-Preserving Query, Target-Changing Query, and
-Unsupported Query. Memory-only permits Update, Deletion, and Unrelated Change.
-Full permits all six existing `MutationRelation` values.
+## RQ2: budget scaling
 
-Random Mutation selects applicable opportunities uniformly and receives no
-retrieval feedback. Unguided LLM uses an LLM for exploration without retrieval
-feedback. LLM-as-Judge uses a distinct online judge to rank valid candidates by
-estimated fault-exposure likelihood, without gold answers or final-evaluator
-references. Coverage-Guided uses only newly covered memory-entry feedback.
-U-Fuzz variants use the frozen U-Fuzz retrieval feedback.
+RQ2 uses LoCoMo, all four backends, U-Fuzz-Q, U-Fuzz-M, and U-Fuzz at checkpoints 1000 through 8000 in steps of 1000. Every point is an observational prefix of the corresponding RQ1 LoCoMo Bmax=8000 trajectory. Checkpoint recording cannot reset or alter history, coverage, frontier, retention, priority, randomness, model state, or selection. RQ2 adds zero campaigns and zero planned executions. Per-repetition UF and Cov prefix series must be monotone.
 
-The primary metrics are `UF@B` and `Cov@B`. `UF@B` is the number of distinct,
-evaluator-confirmed canonical fault signatures discovered in the first `B`
-valid executions of one campaign, deduplicated at campaign level. It is not a
-sum of per-subset counts. `Cov@B` is the cumulative fraction of frozen campaign
-E₀ lineages reached during those executions. Deleted E₀ remains in the
-denominator, and certified replacement/merge/split lineage follows the frozen
-backend contracts. Coverage granularity is backend-specific and is primarily
-compared within a backend.
+## RQ3: component ablation
 
-The valid-execution definition is not redefined here. The authoritative rule
-remains creation of a valid `ResolvedRetrievalObservation` after semantic,
-materialization, transition, retrieval, and returned-lineage certification.
-The final evaluator runs afterward and cannot refund budget. Initialization,
-invalid attempts, failures before resolved observation, evaluator work, and
-free materialization work are outside the valid-execution count as already
-specified by the frozen methodology.
+RQ3 uses LoCoMo at displayed B=4000, all four backends, and all three repetitions. It has exactly fourteen displayed rows.
 
-Every reported value uses the same three raw repetition values. Aggregation is
-the arithmetic mean and sample standard deviation with `ddof = 1`. Experimental
-data are not interpolated and standard deviations are not smoothed or scaled.
+Five rows reuse prefixes of RQ1 LoCoMo trajectories:
 
-## RQ2: budget scaling from RQ1 trajectories
+- U-Fuzz
+- U-Fuzz-Q
+- U-Fuzz-M
+- Coverage-Guided
+- Random Mutation
 
-RQ2 uses only LoCoMo, the same three backends, U-Fuzz-Q, U-Fuzz-M, and U-Fuzz,
-and checkpoints 1000 through 8000 in increments of 1000. It adds zero campaigns.
-For each backend, method, and repetition, RQ2 reads cumulative snapshots from
-the one LoCoMo `B_max = 8000` trajectory already executed for RQ1. Checkpoints
-are not independent runs and do not restart the campaign.
+Six new operator ablations retain full U-Fuzz feedback and remove exactly one relation from the original six-relation universe:
 
-For each raw repetition, both cumulative series must be monotone:
+- U-Fuzz w/o Meaning-Preserving Query
+- U-Fuzz w/o Target-Changing Query
+- U-Fuzz w/o Unsupported Query
+- U-Fuzz w/o Update
+- U-Fuzz w/o Deletion
+- U-Fuzz w/o Unrelated Change
 
-    UF@1000 <= UF@2000 <= ... <= UF@8000
-    Cov@1000 <= Cov@2000 <= ... <= Cov@8000
+The removed relation produces no opportunities. There is no relation quota, probability renormalization, or compensation for the smaller opportunity set.
 
-A decrease is a logger or aggregation error. The RQ2 endpoint at 8000 and the
-corresponding RQ1 entry are the same campaign object and underlying raw value,
-not copied or independently generated values.
+Three new feedback ablations retain all six relations:
 
-Checkpoint observation is side-effect free. Recording a checkpoint cannot
-reset history or coverage, reseed randomness, alter queue or retention state,
-change model state, or influence the next mutation decision.
+- U-Fuzz w/o Coverage
+- U-Fuzz w/o Novelty
+- U-Fuzz w/o Parent Divergence
 
-## RQ3: full-space U-Fuzz ablations
+A disabled feedback component is set to zero without renormalizing the original combination weights. The frozen equations remain:
 
-RQ3 uses LoCoMo at `B = 8000`, all three backends, and repetitions 0, 1, and 2.
-Its displayed rows are Coverage-Guided (a reused reference), U-Fuzz w/o
-Coverage, U-Fuzz w/o Novelty, U-Fuzz w/o Parent Divergence, and full U-Fuzz.
-Every true U-Fuzz ablation uses the full mutation space.
+- full: `S=(G_tilde+S_beh)/2`
+- no coverage: `S=S_beh/2`
+- no novelty: MP query `S=(G_tilde+D_t/2)/2`; otherwise `S=G_tilde/2`
+- no parent divergence: MP query `S=(G_tilde+N_t/2)/2`; otherwise full non-MP scoring
 
-Let `G_tilde = min(1, G_t/k)`, `N_t` be behavioral novelty, and `D_t` be
-parent-child retrieval divergence, available only for Meaning-Preserving Query.
-The frozen full score is:
+Only the nine new ablation configurations create raw RQ3 campaigns: `9×4×3=108` at B=4000, or 432,000 planned valid executions. Scheduler-mechanics ablations are outside the primary RQ3 plan.
 
-    Meaning-Preserving Query: S_beh = (N_t + D_t) / 2
-    Other relations:          S_beh = N_t
-    Full U-Fuzz:              S = (G_tilde + S_beh) / 2
+RQ1-RQ3 therefore contain 276 unique campaigns and 1,440,000 planned valid executions.
 
-An ablation sets exactly one component to zero and **does not renormalize** the
-remaining components or weights:
+## RQ4: API-memory-LLM portability on LoCoMo
 
-- **w/o Coverage:** `G_tilde = 0`; retain `S_beh`; therefore `S = S_beh / 2`.
-- **w/o Novelty:** `N_t = 0`. For Meaning-Preserving Query,
-  `S_beh = D_t/2` and `S = (G_tilde + D_t/2)/2`. For every other relation,
-  `S_beh = 0` and `S = G_tilde/2`.
-- **w/o Parent Divergence:** `D_t = 0`. For Meaning-Preserving Query,
-  `S_beh = N_t/2` and `S = (G_tilde + N_t/2)/2`. For other relations,
-  `S_beh = N_t` and `S = (G_tilde + N_t)/2`.
-- **Full U-Fuzz:** unchanged.
+RQ4 asks whether U-Fuzz remains effective when the memory system's native LLM-dependent processing uses different proprietary API model families. Its primary scope is LoCoMo only, B=2000, Mem0 and Graphiti, repetitions 0-2, and three methods: Random Mutation, Coverage-Guided, and U-Fuzz. These provide no-feedback, simple-coverage-feedback, and full-feedback comparisons.
 
-RQ3 reuses the RQ1 LoCoMo Coverage-Guided and full U-Fuzz campaigns. Full
-U-Fuzz is also the same raw campaign used by RQ2. Only the three component
-ablations add campaigns.
+The planning provider families are OpenAI, Anthropic, and Google. Exact API model IDs and revisions remain production-unbound. The provider condition changes only the memory system's native LLM processing, such as memory/update inference or graph/entity/relation/temporal extraction. It does not choose the mutation generator, scheduler, validator, common response reader, evaluator, embeddings, storage, search, reranker, retrieval k, or repetition procedure.
 
-## Deduplicated campaign and budget totals
+RQ4 campaign identity includes a typed native-memory-LLM condition. Production identity must additionally bind the exact provider/model revision, memory-system prompt/configuration, structured-output schema, parser, decoding, retry/resampling behavior, and causal API/runtime version. Credentials never enter campaign identity, manifests, logs, evidence, or witnesses.
 
-LoCoMo has seven RQ1 method configurations plus three new RQ3 ablations:
+Within one memory system, all three provider conditions must share one invariant backend substrate: source/runtime, embeddings and revision, vector dimension and normalization, storage, search, reranker/cross-encoder, replay/isolation profile, and retrieval k. A provider integration that cannot preserve this control is ineligible.
 
-    10 methods x 3 backends x 3 repetitions = 90 campaigns
-    90 x 8000 = 720000 planned valid executions
+RQ4 reuses UF@B and Cov@B and retains E0 cardinality and retrievable-entry profile identity for interpretation. A condition without complete E0 and lineage is ineligible. RQ4 has `2×3×3×3=54` campaigns and 108,000 planned valid executions. These campaigns are distinct from RQ1 because the native-memory-LLM configuration is causal.
 
-LongMemEval-S has only the seven RQ1 configurations:
+## Counts and engineering targets
 
-    7 methods x 3 backends x 3 repetitions = 63 campaigns
-    63 x 4000 = 252000 planned valid executions
+The complete planning topology is:
 
-The unified plan therefore contains exactly **153 unique campaigns** and
-**972000 planned valid executions**. The execution total excludes invalid
-attempts, initialization and materialization overhead, evaluator calls,
-nonvalid retries, and RQ4.
+- local RQ1-RQ3: 276 campaigns, 1,440,000 valid executions;
+- RQ4 API suite: 54 campaigns, 108,000 valid executions;
+- combined: 330 campaigns, 1,548,000 valid executions.
 
-## Final evaluator and adaptive search
+The six-local-GPU, 24-hour engineering target applies only to RQ1-RQ3. Its execution-only floor is `1,440,000/86,400 = 16.666666...` valid executions/s, with higher attempt and post-B capacity required in practice. RQ4 has a separate, still-unbound API SLA because quotas, rate limits, latency, and cost are external constraints.
 
-The final fault evaluator runs after the valid-execution boundary. Its verdict,
-failure surface, references, and canonical-CFS inputs are unavailable to all
-search methods and ablations. LLM-as-Judge has a separate online judge signal;
-that signal is not the final evaluator and cannot access evaluator-only data.
-The final evaluator may later be deferred or batched if execution indices are
-preserved, every valid observation is evaluated consistently, and each
-`UF@checkpoint` uses only executions at or before that checkpoint.
+## Raw-campaign legality
 
-Independent campaigns may run in parallel using CPU/backend workers,
-asynchronous queues, batched LLM requests, several GPU inference replicas,
-deferred evaluator batches, and backend-specific concurrency caps. Within one
-adaptive campaign, execution `t`, required search feedback and state updates,
-and the decision for execution `t+1` must retain their semantic order.
-Speculative intra-campaign execution that changes that decision sequence is
-forbidden. Cross-campaign parallelism is the primary scaling mechanism.
+Construction fails closed on the complete scientific tuple. The legal raw
+families are RQ1 LoCoMo original-method campaigns at 8000, RQ1 LongMemEval-S
+original-method campaigns at 4000, new RQ3 ablation LoCoMo campaigns at 4000,
+and RQ4 LoCoMo Mem0/Graphiti campaigns at 2000 with one typed provider
+condition. In particular, a reused RQ3 reference is never a separate 4000-run
+campaign: its view checkpoint is 4000 on the canonical RQ1 LoCoMo 8000
+trajectory. RQ membership remains excluded from campaign identity because
+legality is derivable from benchmark, backend, causal method, budget, and the
+optional native-memory-LLM condition.
 
-## Engineering target and future instrumentation
+## Final evaluator and production binding
 
-Six strong GPUs are available, and completing RQ1-RQ3 within 24 wall-clock
-hours is an engineering target rather than a scientific parameter. It is not
-part of campaign identity, method definitions, metrics, or reported values.
-Using the whole 24 hours for execution alone implies:
+The final evaluator is post-B and search-inert. Its references, verdict, failure surface, and CFS inputs are unavailable to search. LLM-as-Judge uses a separate online, gold-blind priority signal and cannot access final-evaluator-only records. Response generation and final evaluation may be deferred if execution ordering is preserved, every valid observation is evaluated consistently, and UF at a checkpoint uses only execution indices at or below that checkpoint.
 
-    972000 / 86400 = 11.25 valid executions per second
-
-Required attempt throughput is higher when the valid-attempt rate is below
-one. This is a planning target, not a guarantee.
-
-The future local logger must expose campaign ID, benchmark, backend, method,
-repetition, attempts, valid executions, valid-attempt rate, total wall time,
-backend failures by frozen failure kind, and time spent in mutation generation,
-semantic validation, materialization, transition certification, retrieval,
-lineage resolution, search feedback, the online judge where applicable, and
-the final evaluator. It must also record LLM request and input/output-token
-counts plus batching and queue metrics where available. No external telemetry
-service is allowed.
-
-Before production, a throughput pilot must estimate valid executions and
-attempts per second, valid-attempt rate, per-stage latency, GPU utilization and
-inference throughput, backend bottlenecks, and projected full-suite wall time.
-Pilot size remains unfrozen.
-
-## Items still requiring a pre-run freeze
-
-- exact generator model and version;
-- exact LLM-as-Judge model and version;
-- exact final evaluator model and version;
-- prompt templates;
-- retrieval depth `k`;
-- candidate-generation limit;
-- retry semantics beyond the frozen budget rule;
-- scheduler queue, retention, chaining, capacity, and eviction policies;
-- tie-breaking;
-- campaign exhaustion and budget-shortfall handling;
-- exact PRNG seed derivation from repetition indices;
-- batching configuration;
-- worker count and GPU serving topology;
-- backend-specific concurrency caps;
-- final RQ4 design.
-
-These items are not implied by the planning contract and must not be filled in
-silently by the runner.
+`EVALUATION_PLAN` is the canonical planning topology. Its empty configuration bindings do not authorize production. A later readiness freeze must bind exact benchmark manifests, native backend profiles, scheduler/opportunity-enumeration version, PRNG, k, realization and validation, response reader, evaluator/CFS, retry policy, and method-specific roles. RQ4 additionally requires the exact native-memory-LLM configuration and invariant-substrate/embedding-control proof.

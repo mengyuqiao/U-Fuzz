@@ -1,4 +1,4 @@
-"""Pure scientific scheduler semantics for the frozen RQ1--RQ3 plan.
+"""Pure scientific scheduler semantics for the frozen RQ1--RQ4 plan.
 
 This module describes trajectory-producing choices without executing a
 scheduler.  It has no queue implementation, backend access, model calls,
@@ -26,10 +26,10 @@ from ufuzz.evaluation_contract import (
     UFUZZ_WITHOUT_COVERAGE,
     UFUZZ_WITHOUT_NOVELTY,
     UFUZZ_WITHOUT_PARENT_DIVERGENCE,
+    RQ3_OPERATOR_ABLATIONS,
     UNGUIDED_LLM,
     MethodSpec,
-    MutationSpace,
-    mutation_relations_for,
+    MutationRelationConfiguration,
 )
 from ufuzz.state_contract import (
     LogicalSeed,
@@ -39,7 +39,9 @@ from ufuzz.state_contract import (
 
 
 class SchedulerPolicyVersion(StrEnum):
-    ROOT_CYCLIC_RETAIN_ALL_V1 = "root-cyclic-retain-all-v1"
+    ROOT_CYCLIC_RETAIN_ALL_RELATION_MASK_V2 = (
+        "root-cyclic-retain-all-relation-mask-v2"
+    )
 
 
 class RootSchedulingRule(StrEnum):
@@ -97,13 +99,15 @@ class SeedAdmissionKind(StrEnum):
 
 
 class OpportunityEnumerationPolicyVersion(StrEnum):
-    COMPLETE_AT_SEED_ADMISSION_V1 = "complete-at-seed-admission-v1"
+    COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2 = (
+        "complete-at-seed-admission-relation-mask-v2"
+    )
 
 
 class OpportunityExistenceInput(StrEnum):
     FROZEN_LOGICAL_SEED_STATE = "frozen_logical_seed_state"
     STRUCTURAL_INDEX_CERTIFICATION = "structural_index_certification"
-    MUTATION_SPACE_MASK = "mutation_space_mask"
+    EXACT_MUTATION_RELATION_MASK = "exact_mutation_relation_mask"
     FROZEN_SCIENTIFIC_CONFIGURATION = "frozen_scientific_configuration"
 
 
@@ -262,6 +266,7 @@ class ProductionBindingRequirement(StrEnum):
     )
     RESPONSE_GENERATION = "response_generation"
     FINAL_EVALUATOR_CFS = "final_evaluator_cfs"
+    NATIVE_MEMORY_LLM_CONFIGURATION = "native_memory_llm_configuration"
     UNGUIDED_CONTROLLER = "unguided_controller"
     UNGUIDED_CONTROLLER_OUTPUT_RESAMPLING_CAP = (
         "unguided_controller_output_resampling_cap"
@@ -512,20 +517,24 @@ class SeedOpportunityEnumeration:
     """Complete immutable scheduler-visible opportunities fixed at admission."""
 
     seed: LogicalSeed
-    mutation_space: MutationSpace
+    relation_configuration: MutationRelationConfiguration
     admission_kind: SeedAdmissionKind
     admission_round: int
     status: OpportunityEnumerationStatus
     opportunities: frozenset[MutationOpportunity]
     policy_version: OpportunityEnumerationPolicyVersion = (
-        OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_V1
+        OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2
     )
 
     def __post_init__(self) -> None:
         if not isinstance(self.seed, LogicalSeed):
             raise TypeError("seed must be a LogicalSeed")
-        if not isinstance(self.mutation_space, MutationSpace):
-            raise TypeError("mutation_space must be a MutationSpace")
+        if not isinstance(
+            self.relation_configuration, MutationRelationConfiguration
+        ):
+            raise TypeError(
+                "relation_configuration must be a MutationRelationConfiguration"
+            )
         if not isinstance(self.admission_kind, SeedAdmissionKind):
             raise TypeError("admission_kind must be a SeedAdmissionKind")
         if isinstance(self.admission_round, bool) or not isinstance(
@@ -540,7 +549,7 @@ class SeedOpportunityEnumeration:
         if not isinstance(self.status, OpportunityEnumerationStatus):
             raise TypeError("status must be an OpportunityEnumerationStatus")
         if self.policy_version is not (
-            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_V1
+            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2
         ):
             raise ValueError("enumeration must use the frozen policy version")
         opportunities = frozenset(self.opportunities)
@@ -549,12 +558,14 @@ class SeedOpportunityEnumeration:
             if opportunities:
                 raise ValueError("an uncertified enumeration cannot expose a partial set")
             return
-        allowed_relations = mutation_relations_for(self.mutation_space)
+        allowed_relations = self.relation_configuration.enabled_relations
         opportunity_ids: set[str] = set()
         for opportunity in opportunities:
             validate_opportunity_parent(opportunity, self.seed)
             if opportunity.relation not in allowed_relations:
-                raise ValueError("enumerated opportunity violates mutation-space mask")
+                raise ValueError(
+                    "enumerated opportunity violates exact mutation-relation mask"
+                )
             if opportunity.opportunity_id in opportunity_ids:
                 raise ValueError("opportunity IDs must be unique within one seed")
             opportunity_ids.add(opportunity.opportunity_id)
@@ -602,7 +613,7 @@ class OpportunityEnumerationContract:
 
     def __post_init__(self) -> None:
         if self.policy_version is not (
-            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_V1
+            OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2
         ):
             raise ValueError("unknown opportunity-enumeration policy")
         if not all(
@@ -632,21 +643,26 @@ class FrontierEligibility:
 
     item: FrontierItem
     parent_retained: bool
-    mutation_space: MutationSpace
+    relation_configuration: MutationRelationConfiguration
     disposition: OpportunityDisposition = OpportunityDisposition.ELIGIBLE
 
     def __post_init__(self) -> None:
         if not isinstance(self.parent_retained, bool):
             raise TypeError("parent_retained must be a bool")
-        if not isinstance(self.mutation_space, MutationSpace):
-            raise TypeError("mutation_space must be a MutationSpace")
+        if not isinstance(
+            self.relation_configuration, MutationRelationConfiguration
+        ):
+            raise TypeError(
+                "relation_configuration must be a MutationRelationConfiguration"
+            )
         if not isinstance(self.disposition, OpportunityDisposition):
             raise TypeError("disposition must be an OpportunityDisposition")
 
     @property
     def relation_allowed(self) -> bool:
-        return self.item.opportunity.relation in mutation_relations_for(
-            self.mutation_space
+        return (
+            self.item.opportunity.relation
+            in self.relation_configuration.enabled_relations
         )
 
     @property
@@ -837,6 +853,7 @@ _METHOD_SCHEDULING_CONTRACTS = MappingProxyType(
                 UFUZZ_WITHOUT_COVERAGE,
                 UFUZZ_WITHOUT_NOVELTY,
                 UFUZZ_WITHOUT_PARENT_DIVERGENCE,
+                *RQ3_OPERATOR_ABLATIONS,
             )
         },
     }
@@ -848,7 +865,7 @@ def _require_frozen_method(method: MethodSpec) -> MethodSpec:
         raise TypeError("method must be a MethodSpec")
     expected = METHODS_BY_ID.get(method.method_id)
     if expected is None or expected.scientific_key != method.scientific_key:
-        raise ValueError("method is outside the frozen RQ1--RQ3 scientific plan")
+        raise ValueError("method is outside the frozen RQ1--RQ4 scientific plan")
     return method
 
 
@@ -857,7 +874,7 @@ def scheduling_contract_for(method: MethodSpec) -> MethodSchedulingContract:
     try:
         return _METHOD_SCHEDULING_CONTRACTS[method.method_id]
     except KeyError as error:
-        raise ValueError("method is outside the frozen RQ1--RQ3 plan") from error
+        raise ValueError("method is outside the frozen RQ1--RQ4 plan") from error
 
 
 def validate_coverage_priority(value: int) -> int:
@@ -1192,7 +1209,7 @@ class CheckpointContract:
 @dataclass(frozen=True, slots=True)
 class RetrievalDepthContract:
     minimum: int
-    globally_shared_across_rq1_rq3: bool
+    globally_shared_across_rq1_rq4: bool
     controls: frozenset[RetrievalDepthUse]
     production_binding: ProductionBindingRequirement
     configured_value: None = None
@@ -1201,8 +1218,8 @@ class RetrievalDepthContract:
         object.__setattr__(self, "controls", frozenset(self.controls))
         if self.minimum != 2:
             raise ValueError("primary retrieval depth minimum is two")
-        if not self.globally_shared_across_rq1_rq3:
-            raise ValueError("one k must be shared across RQ1--RQ3")
+        if not self.globally_shared_across_rq1_rq4:
+            raise ValueError("one k must be shared across RQ1--RQ4")
         if self.controls != frozenset(RetrievalDepthUse):
             raise ValueError("k must control every frozen retrieval-depth use")
         if self.production_binding is not ProductionBindingRequirement.RETRIEVAL_DEPTH:
@@ -1273,14 +1290,16 @@ class SchedulerScientificPolicy:
     retrieval_depth: RetrievalDepthContract
 
     def __post_init__(self) -> None:
-        if self.version is not SchedulerPolicyVersion.ROOT_CYCLIC_RETAIN_ALL_V1:
+        if self.version is not (
+            SchedulerPolicyVersion.ROOT_CYCLIC_RETAIN_ALL_RELATION_MASK_V2
+        ):
             raise ValueError("unknown scheduler scientific policy version")
         if self.relation_balancing is not RelationBalancingRule.NONE:
             raise ValueError("the frozen scheduler has no relation quota")
 
 
 SCHEDULER_POLICY = SchedulerScientificPolicy(
-    SchedulerPolicyVersion.ROOT_CYCLIC_RETAIN_ALL_V1,
+    SchedulerPolicyVersion.ROOT_CYCLIC_RETAIN_ALL_RELATION_MASK_V2,
     RootRoundContract(
         RootSchedulingRule.CYCLIC_PERSISTENT_REPETITION_PERMUTATION,
         RandomStreamName.ROOT_ORDER,
@@ -1293,7 +1312,7 @@ SCHEDULER_POLICY = SchedulerScientificPolicy(
         False,
     ),
     OpportunityEnumerationContract(
-        OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_V1,
+        OpportunityEnumerationPolicyVersion.COMPLETE_AT_SEED_ADMISSION_RELATION_MASK_V2,
         True,
         True,
         True,

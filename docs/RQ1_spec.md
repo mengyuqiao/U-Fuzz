@@ -1,5 +1,14 @@
 # RQ1 Experimental Specification
 
+> **Authority note.** This document records the broader RQ1 method contract.
+> Where older implementation-planning language below describes scheduler or
+> production-configuration choices as unresolved, the committed revised unified
+> RQ1--RQ4 evaluation contract, `docs/scheduler_methodology.md`, and
+> `docs/production_configuration.md` are authoritative. In particular, they
+> supersede older candidate-pool, retention/eviction, repetition, PRNG, and
+> pre-run selection language without changing the mutation, information-flow,
+> budget, or CFS semantics recorded here.
+
 ## Goal and experimental conditions
 
 RQ1 evaluates whether U-Fuzz improves memory exploration and confirmed
@@ -10,6 +19,7 @@ Memory systems:
 - Mem0
 - A-Mem
 - Graphiti
+- MemOS
 
 Benchmarks:
 
@@ -33,9 +43,11 @@ Methods:
 - Unguided LLM Mutation
 - LLM-as-Judge
 - Coverage-Guided
+- U-Fuzz-Q
+- U-Fuzz-M
 - U-Fuzz
 
-These five primary methods use the same benchmark seed corpus, eligible
+The five full-space methods use the same benchmark seed corpus, eligible
 checkpoint set, frozen structural indexes, full mutation operators and targets,
 backend applicability masks, validators, generation-attempt limits, eligibility
 for valid executed mutants to become later seeds, and valid-execution budget.
@@ -477,8 +489,10 @@ uses an LLM to choose among the same applicable obligations and realize the
 chosen mutation without retrieval feedback; it may not leave the shared
 applicable space. LLM-as-Judge ranks valid candidates by their estimated
 likelihood of exposing a memory-use fault, without gold answers, evaluator
-references, failure labels, oracle verdicts, or retrieval feedback. Its
-candidate-pool size and judging cost are fixed after the pilot.
+references, failure labels, oracle verdicts, or U-Fuzz/Coverage feedback. The
+authoritative scheduler contract defines this as one post-execution online
+priority score, with no free backend-executed candidate pool. Its exact model,
+prompt, parser, and resampling cap are fixed by the registered pilot.
 
 Coverage-Guided uses only the memory-entry coverage signal defined below.
 U-Fuzz uses observed new-memory-entry coverage together with its approved
@@ -496,8 +510,9 @@ For a fact with certified entity and relation, define its structural key as:
 Facts with different values or times for the same certified entity-relation
 pair belong to the same structural region. Backend-generated memory, note,
 node, edge, episode, or other replay-unstable IDs are not canonical structural
-keys. The normalization procedure is selected after the pilot and frozen
-before full evaluation.
+keys. The normalization procedure must be specified and independently
+certified before its blinded evaluator/configuration pilot and before full
+evaluation.
 
 For each stable source unit p, define:
 
@@ -842,9 +857,11 @@ without another rule such as crowding distance, hypervolume, or a second
 ranking procedure. No tuned alpha, beta, or gamma weights are introduced.
 
 Coverage-Guided and U-Fuzz resolve exact score ties using the same deterministic
-principle controlled by the repetition seed. Queue capacity, eviction,
-batching, and other scheduler mechanics remain to be fixed during scheduler
-implementation.
+principle controlled by the repetition seed. The authoritative scheduler
+methodology now freezes retain-all logical state, no scientific queue capacity,
+no eviction or aging, next-round child eligibility, and event-keyed tie
+breaking. Semantically equivalent physical caching and batching remain
+engineering choices.
 
 All terms above are search-side observables. They may use root checkpoint
 identity, campaign-local coverage IDs, certified physical-entry lineage,
@@ -937,9 +954,9 @@ procedure and evaluator predicates, which must be fixed before RQ1 execution.
 
 Primary RQ1 results remain separated by benchmark. For each benchmark x
 backend x method cell, aggregate repeated campaign results over repetition
-seeds. Do not pool LoCoMo and LongMemEval-S into one primary result. The number
-of repetitions and uncertainty statistic are selected after the pilot and
-frozen before full evaluation.
+seeds. Do not pool LoCoMo and LongMemEval-S into one primary result. The unified
+evaluation contract fixes repetitions 0, 1, and 2 and reports arithmetic mean
+with sample standard deviation (`ddof=1`).
 
 ## Manual audit
 
@@ -965,29 +982,16 @@ The implementation must include a regression test that:
 3. replays scheduling and retention from the same observable retrieval trace;
 4. verifies that every scheduling and retention decision is identical.
 
-## Parameters and definitions to fix later
+## Production values still to freeze
 
-The following experimental parameters are selected after the pilot and frozen
-before full evaluation:
-
-- numerical B;
-- retrieval depth top-k;
-- generation retry cap;
-- transient materialization/backend retry cap;
-- repetition count;
-- uncertainty statistic;
-- LLM-as-Judge candidate-pool size and judging cost;
-- extraction model and version;
-- entity/relation/time/constraint canonicalization procedure;
-- manual-audit sample size.
-
-The following definitions and implementation/capability details will be fixed
-separately before full evaluation:
-
-- the executable evaluator predicates C_o and Ans, including retrieval-side
-  and answer/use-side correctness and the resulting R/A/RA assignment;
-- backend-specific replay re-binding and transition-certificate implementations;
-- concrete scheduler queue capacity, eviction, and batching mechanics;
-- backend capability issues not yet live-validated.
-
-No implementation may invent these parameters or definitions implicitly.
+The unified evaluation and scheduler contracts now fix budgets, repetitions,
+retain-all scheduling, and the absence of a candidate pool, queue capacity,
+eviction, and aging. Production still requires the registered blinded pilots
+and readiness gates to bind retrieval depth, generation and transport retry
+caps, exact role models/prompts/decoding, native backend profiles, benchmark
+manifests, and the entity/relation/time/constraint canonicalization procedure.
+The executable evaluator predicates `C_o` and `Ans`, retrieval and answer
+correctness, R/A/RA assignment, backend replay/transition implementations, and
+the manual-audit sample design also remain to be completed. No implementation
+may infer these remaining values implicitly or select them from final UF/Cov
+results.
