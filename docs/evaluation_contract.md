@@ -38,15 +38,15 @@ RQ2 uses LoCoMo, all four backends, U-Fuzz-Q, U-Fuzz-M, and U-Fuzz at checkpoint
 
 ## RQ3: component ablation
 
-RQ3 uses LoCoMo at displayed B=4000, all four backends, and all three repetitions. It has exactly fourteen displayed rows.
+RQ3 asks how removing one mutation operator or one feedback component affects
+U-Fuzz relative to Full U-Fuzz. It uses LoCoMo at displayed B=4000, all four
+backends, and repetitions 0, 1, and 2. Its ten conceptual settings are one
+Full U-Fuzz reference and nine one-component-at-a-time ablations.
 
-Five rows reuse prefixes of RQ1 LoCoMo trajectories:
-
-- U-Fuzz
-- U-Fuzz-Q
-- U-Fuzz-M
-- Coverage-Guided
-- Random Mutation
+For every backend and repetition, the Full U-Fuzz reference is the B=4000
+observational prefix of the exact canonical RQ1 LoCoMo Full U-Fuzz Bmax=8000
+campaign. Full therefore adds no raw campaign. U-Fuzz-Q, U-Fuzz-M,
+Coverage-Guided, and Random Mutation remain RQ1 methods but are not RQ3 rows.
 
 Six new operator ablations retain full U-Fuzz feedback and remove exactly one relation from the original six-relation universe:
 
@@ -73,6 +73,32 @@ A disabled feedback component is set to zero without renormalizing the original 
 - no parent divergence: MP query `S=(G_tilde+N_t/2)/2`; otherwise full non-MP scoring
 
 Only the nine new ablation configurations create raw RQ3 campaigns: `9×4×3=108` at B=4000, or 432,000 planned valid executions. Scheduler-mechanics ablations are outside the primary RQ3 plan.
+
+RQ3 reports derived paired deltas at B=4000. For backend `b`, ablation `a`,
+and matched repetition `r`:
+
+    DeltaUF[b,a,r] = UF@4000[b,a,r] - UF@4000[b,Full-U-Fuzz,r]
+    DeltaCov[b,a,r] = Cov@4000[b,a,r] - Cov@4000[b,Full-U-Fuzz,r]
+
+The subtraction is performed within repetitions 0, 1, and 2 first. The table
+then reports the arithmetic mean and sample standard deviation (`ddof=1`) of
+those three paired deltas. It must not subtract aggregate means and synthesize
+an unpaired error bar. Positive values mean the ablation outperformed Full on
+that metric; zero means no observed change; negative values mean removing the
+component reduced the metric. DeltaCov is stored as a difference between raw
+normalized fractions. A presentation such as `-7.0 pp` is permitted only as
+an exact, clearly labeled rendering of `-0.07`.
+
+The main-paper RQ3 table shows Mem0 only. Its nine rows are grouped into the
+six mutation ablations and three feedback ablations, with `DeltaUF@4K` and
+`DeltaCov@4K` columns containing paired-delta mean ± sample standard
+deviation. Full need not appear as a literal zero row because it defines the
+reference. Its absolute UF@4000 and Cov@4000 may be reported elsewhere for
+scale, but they are not additional RQ3 metrics. A-Mem, Graphiti, and MemOS
+report the same nine rows and paired
+metrics in the appendix, separately by backend; results are never averaged
+across systems. Main-paper versus appendix placement is reporting metadata and
+does not affect campaign identity, execution, seeds, budgets, or metrics.
 
 RQ1-RQ3 therefore contain 276 unique campaigns and 1,440,000 planned valid executions.
 

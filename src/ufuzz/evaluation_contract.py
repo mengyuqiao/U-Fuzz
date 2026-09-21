@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from math import sqrt
+from math import isfinite, sqrt
 from types import MappingProxyType
 
 from ufuzz.retrieval_feedback import MutationRelation
@@ -78,6 +78,13 @@ class ResearchQuestion(StrEnum):
 class MetricName(StrEnum):
     UF_AT_B = "UF@B"
     COV_AT_B = "Cov@B"
+    DELTA_UF_AT_B = "DeltaUF@B"
+    DELTA_COV_AT_B = "DeltaCov@B"
+
+
+class ReportingPlacement(StrEnum):
+    MAIN_PAPER = "main_paper"
+    APPENDIX = "appendix"
 
 
 RQ4_METRICS = (MetricName.UF_AT_B, MetricName.COV_AT_B)
@@ -463,13 +470,10 @@ RQ1_METHODS = (
     UFUZZ,
 )
 RQ2_METHODS = (UFUZZ_Q, UFUZZ_M, UFUZZ)
-RQ3_REUSED_METHODS = (
-    UFUZZ,
-    UFUZZ_Q,
-    UFUZZ_M,
-    COVERAGE_GUIDED,
-    RANDOM_MUTATION,
-)
+RQ3_REFERENCE_METHODS = (UFUZZ,)
+# Compatibility name for code that distinguishes reused view rows from new raw
+# campaigns. RQ3 now reuses only the Full U-Fuzz reference.
+RQ3_REUSED_METHODS = RQ3_REFERENCE_METHODS
 RQ3_OPERATOR_ABLATIONS = (
     UFUZZ_WITHOUT_MEANING_PRESERVING_QUERY,
     UFUZZ_WITHOUT_TARGET_CHANGING_QUERY,
@@ -484,7 +488,7 @@ RQ3_FEEDBACK_ABLATIONS = (
     UFUZZ_WITHOUT_PARENT_DIVERGENCE,
 )
 NEW_RQ3_METHODS = RQ3_OPERATOR_ABLATIONS + RQ3_FEEDBACK_ABLATIONS
-RQ3_METHODS = RQ3_REUSED_METHODS + NEW_RQ3_METHODS
+RQ3_METHODS = RQ3_REFERENCE_METHODS + NEW_RQ3_METHODS
 RQ4_METHODS = (RANDOM_MUTATION, COVERAGE_GUIDED, UFUZZ)
 ALL_METHODS = RQ1_METHODS + NEW_RQ3_METHODS
 METHODS_BY_ID = MappingProxyType({method.method_id: method for method in ALL_METHODS})
@@ -507,6 +511,14 @@ BENCHMARK_MAX_BUDGET = MappingProxyType(
 )
 RQ3_BUDGET = 4000
 RQ4_BUDGET = 2000
+RQ3_REPORTING_PLACEMENT = MappingProxyType(
+    {
+        Backend.MEM0: ReportingPlacement.MAIN_PAPER,
+        Backend.AMEM: ReportingPlacement.APPENDIX,
+        Backend.GRAPHITI: ReportingPlacement.APPENDIX,
+        Backend.MEMOS: ReportingPlacement.APPENDIX,
+    }
+)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -771,7 +783,7 @@ def build_evaluation_plan() -> EvaluationPlan:
                 backend,
                 method,
                 repetition,
-                8000 if method in RQ3_REUSED_METHODS else RQ3_BUDGET,
+                8000 if method in RQ3_REFERENCE_METHODS else RQ3_BUDGET,
             ),
         )
         for backend in BACKENDS
@@ -866,6 +878,210 @@ def aggregate_three_repetitions(values: Mapping[int, float]) -> AggregatedValue:
     mean = sum(ordered) / 3.0
     variance = sum((value - mean) ** 2 for value in ordered) / 2.0
     return AggregatedValue(mean, sqrt(variance))
+
+
+@dataclass(frozen=True, slots=True)
+class RQ3MetricObservation:
+    """One raw UF@4K or Cov@4K value bound to an exact RQ3 view entry."""
+
+    view_entry: RQViewEntry
+    metric: MetricName
+    value: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.view_entry, RQViewEntry):
+            raise TypeError("view_entry must be an RQViewEntry")
+        if self.view_entry.research_question is not ResearchQuestion.RQ3:
+            raise ValueError("RQ3 reporting requires an RQ3 view entry")
+        if self.view_entry.display_method_id != self.view_entry.campaign.method.method_id:
+            raise ValueError("display method must match the campaign method")
+        if self.metric not in (MetricName.UF_AT_B, MetricName.COV_AT_B):
+            raise ValueError("RQ3 observations must contain raw UF@B or Cov@B")
+        if isinstance(self.value, bool) or not isinstance(self.value, (int, float)):
+            raise TypeError("metric value must be numeric")
+        value = float(self.value)
+        if not isfinite(value):
+            raise ValueError("metric value must be finite")
+        if self.metric is MetricName.UF_AT_B and value < 0:
+            raise ValueError("UF@B cannot be negative")
+        if self.metric is MetricName.COV_AT_B and not 0.0 <= value <= 1.0:
+            raise ValueError("Cov@B must lie in [0, 1]")
+        object.__setattr__(self, "value", value)
+
+
+@dataclass(frozen=True, slots=True)
+class PairedAblationDelta:
+    """One matched-repetition RQ3 ablation-minus-Full delta."""
+
+    backend: Backend
+    ablation: MethodSpec
+    repetition_index: int
+    checkpoint: int
+    raw_metric: MetricName
+    full_value: float
+    ablation_value: float
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.backend, Backend):
+            raise TypeError("backend must be a Backend")
+        if self.ablation not in NEW_RQ3_METHODS:
+            raise ValueError("ablation must be one of the nine frozen RQ3 ablations")
+        if self.repetition_index not in REPETITION_INDICES:
+            raise ValueError("repetition index must be one of 0, 1, and 2")
+        if self.checkpoint != RQ3_BUDGET:
+            raise ValueError("RQ3 paired deltas require B=4000")
+        if self.raw_metric not in (MetricName.UF_AT_B, MetricName.COV_AT_B):
+            raise ValueError("paired deltas require raw UF@B or Cov@B")
+        for name, value in (
+            ("full_value", self.full_value),
+            ("ablation_value", self.ablation_value),
+        ):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{name} must be numeric")
+            if not isfinite(float(value)):
+                raise ValueError(f"{name} must be finite")
+            object.__setattr__(self, name, float(value))
+        if self.raw_metric is MetricName.UF_AT_B and (
+            self.full_value < 0 or self.ablation_value < 0
+        ):
+            raise ValueError("UF@B inputs cannot be negative")
+        if self.raw_metric is MetricName.COV_AT_B and not (
+            0.0 <= self.full_value <= 1.0
+            and 0.0 <= self.ablation_value <= 1.0
+        ):
+            raise ValueError("Cov@B inputs must lie in [0, 1]")
+
+    @property
+    def delta(self) -> float:
+        """Ablation minus Full; negative means removal reduced the metric."""
+
+        return self.ablation_value - self.full_value
+
+    @property
+    def derived_metric(self) -> MetricName:
+        return (
+            MetricName.DELTA_UF_AT_B
+            if self.raw_metric is MetricName.UF_AT_B
+            else MetricName.DELTA_COV_AT_B
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RQ3AblationSummary:
+    """Mean and sample standard deviation of three matched-repetition deltas."""
+
+    paired_deltas: tuple[PairedAblationDelta, ...]
+
+    def __post_init__(self) -> None:
+        values = tuple(self.paired_deltas)
+        if any(not isinstance(item, PairedAblationDelta) for item in values):
+            raise TypeError("paired_deltas must contain PairedAblationDelta values")
+        if {item.repetition_index for item in values} != set(REPETITION_INDICES):
+            raise ValueError("summary requires exactly repetitions 0, 1, and 2")
+        if len(values) != len(REPETITION_INDICES):
+            raise ValueError("summary cannot contain duplicate repetitions")
+        dimensions = {
+            (item.backend, item.ablation, item.checkpoint, item.raw_metric)
+            for item in values
+        }
+        if len(dimensions) != 1:
+            raise ValueError("paired deltas must share backend, ablation, B, and metric")
+        object.__setattr__(
+            self,
+            "paired_deltas",
+            tuple(sorted(values, key=lambda item: item.repetition_index)),
+        )
+
+    @property
+    def backend(self) -> Backend:
+        return self.paired_deltas[0].backend
+
+    @property
+    def ablation(self) -> MethodSpec:
+        return self.paired_deltas[0].ablation
+
+    @property
+    def derived_metric(self) -> MetricName:
+        return self.paired_deltas[0].derived_metric
+
+    @property
+    def arithmetic_mean(self) -> float:
+        return aggregate_three_repetitions(
+            {item.repetition_index: item.delta for item in self.paired_deltas}
+        ).arithmetic_mean
+
+    @property
+    def sample_standard_deviation(self) -> float:
+        return aggregate_three_repetitions(
+            {item.repetition_index: item.delta for item in self.paired_deltas}
+        ).sample_standard_deviation
+
+
+def summarize_rq3_paired_delta(
+    full_observations: Sequence[RQ3MetricObservation],
+    ablation_observations: Sequence[RQ3MetricObservation],
+) -> RQ3AblationSummary:
+    """Pair exact RQ3 repetitions and aggregate ablation-minus-Full deltas."""
+
+    def by_repetition(
+        observations: Sequence[RQ3MetricObservation], label: str
+    ) -> dict[int, RQ3MetricObservation]:
+        indexed: dict[int, RQ3MetricObservation] = {}
+        for observation in observations:
+            if not isinstance(observation, RQ3MetricObservation):
+                raise TypeError(f"{label} observations must be RQ3MetricObservation values")
+            repetition = observation.view_entry.campaign.repetition_index
+            if repetition in indexed:
+                raise ValueError(f"duplicate {label} repetition {repetition}")
+            indexed[repetition] = observation
+        if set(indexed) != set(REPETITION_INDICES):
+            raise ValueError(f"{label} requires repetitions 0, 1, and 2")
+        return indexed
+
+    full = by_repetition(full_observations, "Full")
+    ablation = by_repetition(ablation_observations, "ablation")
+    pairs: list[PairedAblationDelta] = []
+    for repetition in REPETITION_INDICES:
+        full_value = full[repetition]
+        ablation_value = ablation[repetition]
+        full_entry = full_value.view_entry
+        ablation_entry = ablation_value.view_entry
+        if full_entry.campaign.method is not UFUZZ:
+            raise ValueError("RQ3 Full reference must be U-Fuzz")
+        if ablation_entry.campaign.method not in NEW_RQ3_METHODS:
+            raise ValueError("RQ3 comparison method must be an exact frozen ablation")
+        if full_value.metric is not ablation_value.metric:
+            raise ValueError("paired observations must use the same raw metric")
+        if full_entry.campaign.benchmark is not Benchmark.LOCOMO or (
+            ablation_entry.campaign.benchmark is not Benchmark.LOCOMO
+        ):
+            raise ValueError("RQ3 paired observations must use LoCoMo")
+        if full_entry.campaign.backend is not ablation_entry.campaign.backend:
+            raise ValueError("paired observations must use the same backend")
+        if full_entry.checkpoint != ablation_entry.checkpoint:
+            raise ValueError("paired observations must use the same B")
+        if full_entry.checkpoint != RQ3_BUDGET:
+            raise ValueError("RQ3 paired observations require B=4000")
+        if full_entry.campaign.max_budget != 8000:
+            raise ValueError("Full reference must reuse the RQ1 Bmax=8000 campaign")
+        if ablation_entry.campaign.max_budget != RQ3_BUDGET:
+            raise ValueError("ablation must use its raw Bmax=4000 campaign")
+        if full_entry.campaign.native_memory_llm_condition is not None or (
+            ablation_entry.campaign.native_memory_llm_condition is not None
+        ):
+            raise ValueError("RQ3 cannot use an RQ4 native-memory-LLM condition")
+        pairs.append(
+            PairedAblationDelta(
+                full_entry.campaign.backend,
+                ablation_entry.campaign.method,
+                repetition,
+                full_entry.checkpoint,
+                full_value.metric,
+                full_value.value,
+                ablation_value.value,
+            )
+        )
+    return RQ3AblationSummary(tuple(pairs))
 
 
 @dataclass(frozen=True, slots=True)

@@ -25,7 +25,9 @@ from ufuzz.evaluation_contract import (
     RQ3_FEEDBACK_ABLATIONS,
     RQ3_METHODS,
     RQ3_OPERATOR_ABLATIONS,
+    RQ3_REFERENCE_METHODS,
     RQ3_REUSED_METHODS,
+    RQ3_REPORTING_PLACEMENT,
     RQ4_BACKENDS,
     RQ4_BUDGET,
     RQ4_METHODS,
@@ -46,14 +48,20 @@ from ufuzz.evaluation_contract import (
     FeedbackCombinationRule,
     FeedbackComponentMask,
     MethodScientificKey,
+    MetricName,
     MutationRelationConfiguration,
     MutationSpace,
     NativeMemoryLLMCondition,
     NativeMemoryLLMProvider,
     OnlineSearchSignal,
+    PairedAblationDelta,
+    ReportingPlacement,
     ResearchQuestion,
+    RQ3AblationSummary,
+    RQ3MetricObservation,
     SelectionFamily,
     aggregate_three_repetitions,
+    summarize_rq3_paired_delta,
     validate_rq2_prefix_series,
 )
 from ufuzz.retrieval_feedback import MutationRelation
@@ -75,6 +83,22 @@ class EvaluationContractTests(unittest.TestCase):
             and item.checkpoint == checkpoint
             and item.campaign.benchmark is Benchmark.LOCOMO
             and item.campaign.native_memory_llm_condition == condition
+        )
+
+    def rq3_observations(self, backend, method, metric, values):
+        return tuple(
+            RQ3MetricObservation(
+                self.entry(
+                    ResearchQuestion.RQ3,
+                    backend,
+                    method.method_id,
+                    repetition,
+                    RQ3_BUDGET,
+                ),
+                metric,
+                value,
+            )
+            for repetition, value in enumerate(values)
         )
 
     def test_frozen_dimensions(self) -> None:
@@ -203,10 +227,18 @@ class EvaluationContractTests(unittest.TestCase):
     def test_rq_view_cardinalities(self) -> None:
         self.assertEqual(len(self.plan.rq1), 168)
         self.assertEqual(len(self.plan.rq2), 4 * 3 * 3 * 8)
-        self.assertEqual(len(RQ3_METHODS), 14)
-        self.assertEqual(len(RQ3_REUSED_METHODS), 5)
+        self.assertEqual(len(RQ3_METHODS), 10)
+        self.assertEqual(RQ3_REFERENCE_METHODS, (UFUZZ,))
+        self.assertEqual(RQ3_REUSED_METHODS, (UFUZZ,))
         self.assertEqual(len(NEW_RQ3_METHODS), 9)
-        self.assertEqual(len(self.plan.rq3), 14 * 4 * 3)
+        self.assertEqual(len(self.plan.rq3), 10 * 4 * 3)
+        self.assertEqual(
+            sum(entry.campaign.method is UFUZZ for entry in self.plan.rq3), 12
+        )
+        self.assertFalse(
+            {UFUZZ_Q, UFUZZ_M, RANDOM_MUTATION, COVERAGE_GUIDED}
+            & {entry.campaign.method for entry in self.plan.rq3}
+        )
         self.assertEqual(len(self.plan.rq4), 54)
         self.assertEqual(
             {entry.campaign.scientific_key for entry in self.plan.rq2}
@@ -224,17 +256,162 @@ class EvaluationContractTests(unittest.TestCase):
                     rq2 = self.entry(ResearchQuestion.RQ2, backend, method.method_id, repetition, 8000)
                     self.assertIs(rq1.campaign, rq2.campaign)
 
-    def test_rq3_reuses_five_rq1_prefixes(self) -> None:
+    def test_rq3_reuses_only_full_ufuzz_rq1_prefix(self) -> None:
         for backend in BACKENDS:
-            for method in RQ3_REUSED_METHODS:
-                for repetition in REPETITION_INDICES:
-                    rq1 = self.entry(ResearchQuestion.RQ1, backend, method.method_id, repetition, 8000)
-                    rq3 = self.entry(ResearchQuestion.RQ3, backend, method.method_id, repetition, RQ3_BUDGET)
-                    self.assertIs(rq1.campaign, rq3.campaign)
-                    self.assertEqual(rq3.campaign.max_budget, 8000)
+            for repetition in REPETITION_INDICES:
+                rq1 = self.entry(ResearchQuestion.RQ1, backend, UFUZZ.method_id, repetition, 8000)
+                rq3 = self.entry(ResearchQuestion.RQ3, backend, UFUZZ.method_id, repetition, RQ3_BUDGET)
+                self.assertIs(rq1.campaign, rq3.campaign)
+                self.assertEqual(rq3.campaign.max_budget, 8000)
         for entry in self.plan.rq3:
             if entry.campaign.method in NEW_RQ3_METHODS:
                 self.assertEqual(entry.campaign.max_budget, 4000)
+
+    def test_rq3_reporting_placement_is_metadata_only(self) -> None:
+        self.assertEqual(
+            RQ3_REPORTING_PLACEMENT,
+            {
+                Backend.MEM0: ReportingPlacement.MAIN_PAPER,
+                Backend.AMEM: ReportingPlacement.APPENDIX,
+                Backend.GRAPHITI: ReportingPlacement.APPENDIX,
+                Backend.MEMOS: ReportingPlacement.APPENDIX,
+            },
+        )
+        self.assertNotIn(
+            "reporting_placement",
+            CampaignSpec(
+                Benchmark.LOCOMO, Backend.MEM0, UFUZZ, 0, 8000
+            ).scientific_key.__dataclass_fields__,
+        )
+
+    def test_rq3_paired_uf_delta_uses_matched_repetitions(self) -> None:
+        full = self.rq3_observations(
+            Backend.MEM0, UFUZZ, MetricName.UF_AT_B, (10, 12, 14)
+        )
+        ablation = self.rq3_observations(
+            Backend.MEM0,
+            RQ3_OPERATOR_ABLATIONS[0],
+            MetricName.UF_AT_B,
+            (8, 13, 9),
+        )
+        summary = summarize_rq3_paired_delta(full, ablation)
+        self.assertIsInstance(summary, RQ3AblationSummary)
+        self.assertTrue(
+            all(isinstance(item, PairedAblationDelta) for item in summary.paired_deltas)
+        )
+        self.assertEqual(
+            tuple(item.delta for item in summary.paired_deltas), (-2.0, 1.0, -5.0)
+        )
+        self.assertEqual(summary.derived_metric, MetricName.DELTA_UF_AT_B)
+        self.assertEqual(summary.arithmetic_mean, -2.0)
+        self.assertEqual(summary.sample_standard_deviation, 3.0)
+
+    def test_rq3_paired_cov_delta_keeps_fraction_units_and_sign(self) -> None:
+        full = self.rq3_observations(
+            Backend.MEM0, UFUZZ, MetricName.COV_AT_B, (0.68, 0.61, 0.70)
+        )
+        ablation = self.rq3_observations(
+            Backend.MEM0,
+            RQ3_FEEDBACK_ABLATIONS[0],
+            MetricName.COV_AT_B,
+            (0.61, 0.61, 0.65),
+        )
+        summary = summarize_rq3_paired_delta(full, ablation)
+        self.assertEqual(summary.derived_metric, MetricName.DELTA_COV_AT_B)
+        self.assertAlmostEqual(summary.paired_deltas[0].delta, -0.07)
+        self.assertEqual(summary.paired_deltas[1].delta, 0.0)
+        self.assertAlmostEqual(summary.paired_deltas[2].delta, -0.05)
+        expected = aggregate_three_repetitions({0: -0.07, 1: 0.0, 2: -0.05})
+        self.assertAlmostEqual(summary.arithmetic_mean, expected.arithmetic_mean)
+        self.assertAlmostEqual(
+            summary.sample_standard_deviation,
+            expected.sample_standard_deviation,
+        )
+
+    def test_rq3_pairing_rejects_missing_and_duplicate_repetitions(self) -> None:
+        full = self.rq3_observations(
+            Backend.MEM0, UFUZZ, MetricName.UF_AT_B, (10, 12, 14)
+        )
+        ablation = self.rq3_observations(
+            Backend.MEM0,
+            RQ3_OPERATOR_ABLATIONS[0],
+            MetricName.UF_AT_B,
+            (8, 13, 9),
+        )
+        with self.assertRaisesRegex(ValueError, "repetitions"):
+            summarize_rq3_paired_delta(full[:-1], ablation)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            summarize_rq3_paired_delta(full + (full[0],), ablation)
+
+    def test_rq3_pairing_rejects_wrong_backend_budget_and_method(self) -> None:
+        full = self.rq3_observations(
+            Backend.MEM0, UFUZZ, MetricName.UF_AT_B, (10, 12, 14)
+        )
+        ablation = self.rq3_observations(
+            Backend.MEM0,
+            RQ3_OPERATOR_ABLATIONS[0],
+            MetricName.UF_AT_B,
+            (8, 13, 9),
+        )
+        wrong_backend = self.rq3_observations(
+            Backend.AMEM,
+            RQ3_OPERATOR_ABLATIONS[0],
+            MetricName.UF_AT_B,
+            (8, 13, 9),
+        )
+        with self.assertRaisesRegex(ValueError, "same backend"):
+            summarize_rq3_paired_delta(full, wrong_backend)
+
+        wrong_budget = tuple(
+            RQ3MetricObservation(replace(item.view_entry, checkpoint=3000), item.metric, item.value)
+            for item in ablation
+        )
+        with self.assertRaisesRegex(ValueError, "same B"):
+            summarize_rq3_paired_delta(full, wrong_budget)
+
+        wrong_method = tuple(
+            RQ3MetricObservation(
+                replace(
+                    item.view_entry,
+                    display_method_id=UFUZZ_Q.method_id,
+                    campaign=self.entry(
+                        ResearchQuestion.RQ1,
+                        Backend.MEM0,
+                        UFUZZ_Q.method_id,
+                        item.view_entry.campaign.repetition_index,
+                        8000,
+                    ).campaign,
+                ),
+                item.metric,
+                item.value,
+            )
+            for item in ablation
+        )
+        with self.assertRaisesRegex(ValueError, "exact frozen ablation"):
+            summarize_rq3_paired_delta(full, wrong_method)
+        with self.assertRaisesRegex(ValueError, "Full reference"):
+            summarize_rq3_paired_delta(wrong_method, ablation)
+
+        longmemeval_full = tuple(
+            RQ3MetricObservation(
+                replace(
+                    next(
+                        entry
+                        for entry in self.plan.rq1
+                        if entry.campaign.benchmark is Benchmark.LONGMEMEVAL_S
+                        and entry.campaign.backend is Backend.MEM0
+                        and entry.campaign.method is UFUZZ
+                        and entry.campaign.repetition_index == repetition
+                    ),
+                    research_question=ResearchQuestion.RQ3,
+                ),
+                MetricName.UF_AT_B,
+                value,
+            )
+            for repetition, value in enumerate((10, 12, 14))
+        )
+        with self.assertRaisesRegex(ValueError, "LoCoMo"):
+            summarize_rq3_paired_delta(longmemeval_full, ablation)
 
     def test_rq4_structure_and_provider_identity(self) -> None:
         self.assertEqual(RQ4_BACKENDS, (Backend.MEM0, Backend.GRAPHITI))
@@ -301,18 +478,16 @@ class EvaluationContractTests(unittest.TestCase):
                 )
 
     def test_rq3_reference_cannot_be_an_independent_4k_raw_campaign(self) -> None:
-        for method in RQ3_REUSED_METHODS:
-            with self.subTest(method=method.method_id), self.assertRaises(ValueError):
-                CampaignSpec(Benchmark.LOCOMO, Backend.MEM0, method, 0, 4000)
-        for method in RQ3_REUSED_METHODS:
-            entry = self.entry(
-                ResearchQuestion.RQ3,
-                Backend.MEM0,
-                method.method_id,
-                0,
-                RQ3_BUDGET,
-            )
-            self.assertEqual(entry.campaign.max_budget, 8000)
+        with self.assertRaises(ValueError):
+            CampaignSpec(Benchmark.LOCOMO, Backend.MEM0, UFUZZ, 0, 4000)
+        entry = self.entry(
+            ResearchQuestion.RQ3,
+            Backend.MEM0,
+            UFUZZ.method_id,
+            0,
+            RQ3_BUDGET,
+        )
+        self.assertEqual(entry.campaign.max_budget, 8000)
 
     def test_configuration_bindings_normalize_and_affect_identity(self) -> None:
         a = ConfigurationBinding("backend", "v1")
