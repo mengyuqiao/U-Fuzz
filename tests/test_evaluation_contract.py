@@ -172,9 +172,7 @@ class EvaluationContractTests(unittest.TestCase):
             ),
             replace(
                 key,
-                feedback_combination_rule=(
-                    FeedbackCombinationRule.RENORMALIZE_ENABLED_COMPONENTS
-                ),
+                feedback_combination_rule=None,
             ),
         )
         self.assertTrue(all(candidate != key for candidate in variants))

@@ -65,7 +65,6 @@ class FeedbackCombinationRule(StrEnum):
     ZERO_DISABLED_WITHOUT_RENORMALIZATION = (
         "zero_disabled_without_renormalization"
     )
-    RENORMALIZE_ENABLED_COMPONENTS = "renormalize_enabled_components"
 
 
 class ResearchQuestion(StrEnum):
@@ -130,9 +129,8 @@ class MethodScientificKey:
     """Causal method semantics used by scientific campaign identity.
 
     Presentation labels, fairness annotations, and RQ membership deliberately
-    do not enter this key.  The alternate combination-rule enum value permits
-    identity validation for a counterfactual causal rule; the frozen MethodSpec
-    contract below continues to admit only zeroing without renormalization.
+    do not enter this key. The frozen MethodSpec contract below admits only
+    zeroing without renormalization.
     """
 
     method_id: str
