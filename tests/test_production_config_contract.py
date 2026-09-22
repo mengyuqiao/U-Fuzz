@@ -157,6 +157,13 @@ class ProductionConfigurationContractTests(unittest.TestCase):
             MEMOS_NATIVE_TARGET,
         )
         self.assertTrue(MEMOS_NATIVE_TARGET.primary_ready)
+        self.assertTrue(AMEM_NATIVE_TARGET.materializer_complete)
+        self.assertFalse(AMEM_NATIVE_TARGET.exact_configuration_frozen)
+        self.assertFalse(AMEM_NATIVE_TARGET.live_validation_complete)
+        self.assertIs(
+            AMEM_NATIVE_TARGET.readiness,
+            BackendReadiness.REQUIRES_NATIVE_PROFILE_VALIDATION,
+        )
         self.assertTrue(
             all(
                 profile.profile_use is BackendProfileUse.PRIMARY_NATIVE

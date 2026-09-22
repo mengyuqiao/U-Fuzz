@@ -35,8 +35,13 @@ as validation tracks and cannot silently replace the native primary profile.
   inventory equivalence, provenance and E0 rebinding, auxiliary entity state,
   update/delete behavior, replacement/merge/split evidence where applicable,
   exact lineage, and replay certifiability.
-- **A-Mem** requires a native primary profile, dedicated-process isolation, and
-  a materializer with replay, inventory, lineage, transition, and cleanup proof.
+- **A-Mem** is pinned to commit `ceffb860f0712bbae97b184d440df62bc910ca8d`
+  with public `MemoryNote` state, its fixed Chroma `memories` collection, and
+  dedicated-process isolation. Its materializer freezes complete inventory,
+  exact projection/provenance rebinding, ranked retrieval, and same-ID
+  Update/Delete/Unrelated-Change transitions. Production still requires the
+  exact native LLM and embedding configuration to pass live root-replay
+  validation; any replay drift fails closed before a state is published.
 - **Graphiti** requires a native primary profile, isolated database/search
   configuration, protection from shared mutable search recipes, and a
   materializer with replay, inventory, graph-transition, lineage, and cleanup
@@ -245,9 +250,10 @@ methods for that backend.
 ## Backend and throughput dependency
 
 Native profiles and materializers are validated before final retrieval-k and
-model pilots. MemOS GeneralText capability and materialization are frozen;
-Mem0 Profile B and the A-Mem and Graphiti production materializers remain to
-be validated, followed by benchmark-scale isolation and throughput proof.
+model pilots. MemOS GeneralText capability and materialization are frozen.
+A-Mem materialization is complete and fail-closed, while its exact native model
+binding and live replay validation remain. Graphiti materialization remains to
+be completed, followed by benchmark-scale isolation and throughput proof.
 
 The local RQ1--RQ3 plan has 1,440,000 valid executions and, without a proven
 exact evaluator router, the same number of response and evaluator records. The

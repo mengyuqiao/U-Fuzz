@@ -26,6 +26,8 @@ AMEM_VERSION = "0.0.1"
 
 
 class AMemAdapter(BackendAdapter):
+    _process_owner_state_id: str | None = None
+
     def __init__(
         self,
         *,
@@ -123,7 +125,7 @@ class AMemAdapter(BackendAdapter):
     async def create_isolated_state(
         self, artifact: InitializationArtifact
     ) -> StateHandle:
-        if self._states:
+        if self._states or type(self)._process_owner_state_id is not None:
             raise RuntimeError(
                 "A-Mem uses a fixed reset-on-construction Chroma collection; "
                 "only one in-process state is safe"
@@ -139,6 +141,7 @@ class AMemAdapter(BackendAdapter):
         )
         self._states[state_id] = state
         self._provenance[state_id] = {}
+        type(self)._process_owner_state_id = state_id
         return state
 
     async def ingest(
@@ -296,3 +299,5 @@ class AMemAdapter(BackendAdapter):
         finally:
             self._states.pop(state.state_id, None)
             self._provenance.pop(state.state_id, None)
+            if type(self)._process_owner_state_id == state.state_id:
+                type(self)._process_owner_state_id = None

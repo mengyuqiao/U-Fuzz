@@ -119,13 +119,13 @@ MEM0_PROFILE_B_TARGET = BackendProfileStatus(
 )
 AMEM_NATIVE_TARGET = BackendProfileStatus(
     Backend.AMEM,
-    "a-mem-native-primary-unbound",
+    "a-mem-native:ceffb860:memory-note:chroma:v1",
     BackendProfileUse.PRIMARY_NATIVE,
-    BackendReadiness.REQUIRES_MATERIALIZER_AND_REPLAY_PROOF,
+    BackendReadiness.REQUIRES_NATIVE_PROFILE_VALIDATION,
     True,
     False,
     False,
-    False,
+    True,
 )
 GRAPHITI_NATIVE_TARGET = BackendProfileStatus(
     Backend.GRAPHITI,
