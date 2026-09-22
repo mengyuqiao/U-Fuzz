@@ -12,7 +12,12 @@ One unit of B is consumed only after semantic validation, exact certified materi
 
 `UF@B` is the number of distinct evaluator-confirmed canonical fault signatures among executions 1 through B, deduplicated within the campaign rather than summed across subsets. A canonical fault signature contains `root_checkpoint_id`, `mutation_relation`, `canonical_query_intent`, `canonical_mutation_target`, and `failure_surface`. `Cov@B` is cumulative reached frozen E0 lineage divided by the campaign's frozen E0 cardinality. Deleted E0 entries remain in the denominator, and replacement, merge, and split lineage follow the frozen backend contracts. Coverage is backend-entry-granularity specific and is primarily compared within one backend.
 
-The primary backends for RQ1-RQ3 are Mem0, A-Mem, Graphiti, and MemOS. MemOS is planning identity only until its native capability, materialization, replay, lineage, isolation, and cleanup proofs are complete.
+The primary backends for RQ1-RQ3 are Mem0, A-Mem, Graphiti, and MemOS. The
+frozen MemOS profile is **MemOS v2.0.33 using its GeneralTextMemory
+textual-memory backend**, pinned to source commit
+`78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad`. It uses direct deterministic
+textual-item construction and native GeneralText add/search/get-all/update/
+delete operations.
 
 Methods carry an exact immutable relation configuration. Full methods enable all six frozen `MutationRelation` values. U-Fuzz-Q enables exactly the three query relations; U-Fuzz-M enables exactly the three memory relations. A leave-one-operator-out method has broad space FULL and exactly five relations. The exact relation set is causal campaign identity.
 

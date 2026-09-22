@@ -139,13 +139,94 @@ GRAPHITI_NATIVE_TARGET = BackendProfileStatus(
 )
 MEMOS_NATIVE_TARGET = BackendProfileStatus(
     Backend.MEMOS,
-    "memos-native-primary-unbound",
+    "memos-general-text:v2.0.33:78a372a4:embedded-qdrant-1.16.2:"
+    "nomic-embed-text-0a109f42:dim-768:cosine:direct-items:v1",
     BackendProfileUse.PRIMARY_NATIVE,
-    BackendReadiness.REQUIRES_MATERIALIZER_AND_REPLAY_PROOF,
+    BackendReadiness.PRODUCTION_READY,
     True,
-    False,
-    False,
-    False,
+    True,
+    True,
+    True,
+)
+
+
+@dataclass(frozen=True, slots=True)
+class MemosGeneralTextProfileManifest:
+    """Exact causal identity of the selected local RQ1--RQ3 MemOS profile."""
+
+    memos_release: str
+    memos_source_commit: str
+    memory_backend: str
+    vector_store_mode: str
+    qdrant_client_version: str
+    distance: str
+    embedding_model: str
+    embedding_manifest_digest: str
+    embedding_dimension: int
+    construction: str
+    native_extract_enabled: bool
+    native_chat_enabled: bool
+    merge_split_applicable: bool
+    isolation_strategy: str
+
+    def __post_init__(self) -> None:
+        for name in (
+            "memos_release", "memos_source_commit", "memory_backend",
+            "vector_store_mode", "qdrant_client_version", "distance",
+            "embedding_model", "embedding_manifest_digest", "construction",
+            "isolation_strategy",
+        ):
+            if not isinstance(getattr(self, name), str) or not getattr(self, name):
+                raise ValueError(f"{name} must be a non-empty string")
+        if len(self.memos_source_commit) != 40 or len(self.embedding_manifest_digest) != 64:
+            raise ValueError("source and embedding identities must use full immutable digests")
+        if self.embedding_dimension != 768:
+            raise ValueError("selected MemOS embedding dimension must be 768")
+        if any((self.native_extract_enabled, self.native_chat_enabled, self.merge_split_applicable)):
+            raise ValueError("extract/chat/merge-split are excluded from this profile")
+
+    @property
+    def artifact_bytes(self) -> bytes:
+        return _canonical_fields(
+            "UFUZZ_MEMOS_GENERAL_TEXT_PROFILE_V1",
+            self.memos_release,
+            self.memos_source_commit,
+            self.memory_backend,
+            self.vector_store_mode,
+            self.qdrant_client_version,
+            self.distance,
+            self.embedding_model,
+            self.embedding_manifest_digest,
+            str(self.embedding_dimension),
+            self.construction,
+            str(self.native_extract_enabled),
+            str(self.native_chat_enabled),
+            str(self.merge_split_applicable),
+            self.isolation_strategy,
+        )
+
+    @property
+    def artifact_sha256(self) -> str:
+        return sha256(self.artifact_bytes).hexdigest()
+
+
+MEMOS_GENERAL_TEXT_PROFILE_MANIFEST = MemosGeneralTextProfileManifest(
+    memos_release="2.0.33",
+    memos_source_commit="78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad",
+    memory_backend="memos.memories.textual.general.GeneralTextMemory",
+    vector_store_mode="embedded-local-qdrant",
+    qdrant_client_version="1.16.2",
+    distance="cosine",
+    embedding_model="nomic-embed-text",
+    embedding_manifest_digest=(
+        "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+    ),
+    embedding_dimension=768,
+    construction="direct-deterministic-TextualMemoryItem",
+    native_extract_enabled=False,
+    native_chat_enabled=False,
+    merge_split_applicable=False,
+    isolation_strategy="dedicated-process-and-adapter-owned-qdrant-path-per-state",
 )
 
 PRIMARY_BACKEND_PROFILE_TARGETS = MappingProxyType(

@@ -28,6 +28,7 @@ from ufuzz.production_config_contract import (
     MEM0_PROFILE_A,
     MEM0_PROFILE_B_TARGET,
     MEMOS_NATIVE_TARGET,
+    MEMOS_GENERAL_TEXT_PROFILE_MANIFEST,
     MODEL_ROLE_SEPARATION,
     ONLINE_JUDGE_PILOT,
     PRNG_DERIVATION,
@@ -140,7 +141,7 @@ class ProductionConfigurationContractTests(unittest.TestCase):
         self.assertFalse(MEM0_PROFILE_A.intended_native_profile)
         self.assertFalse(MEM0_PROFILE_A.primary_ready)
 
-    def test_primary_profile_targets_are_native_and_not_yet_ready(self) -> None:
+    def test_primary_profile_targets_include_validated_memos_profile(self) -> None:
         self.assertEqual(
             set(PRIMARY_BACKEND_PROFILE_TARGETS),
             {Backend.MEM0, Backend.AMEM, Backend.GRAPHITI, Backend.MEMOS},
@@ -155,14 +156,32 @@ class ProductionConfigurationContractTests(unittest.TestCase):
             PRIMARY_BACKEND_PROFILE_TARGETS[Backend.MEMOS],
             MEMOS_NATIVE_TARGET,
         )
+        self.assertTrue(MEMOS_NATIVE_TARGET.primary_ready)
         self.assertTrue(
             all(
                 profile.profile_use is BackendProfileUse.PRIMARY_NATIVE
                 and profile.intended_native_profile
                 and not profile.primary_ready
-                for profile in PRIMARY_BACKEND_PROFILE_TARGETS.values()
+                for backend, profile in PRIMARY_BACKEND_PROFILE_TARGETS.items()
+                if backend is not Backend.MEMOS
             )
         )
+
+    def test_memos_general_text_profile_manifest_is_exact_and_chat_free(self) -> None:
+        manifest = MEMOS_GENERAL_TEXT_PROFILE_MANIFEST
+        self.assertEqual(manifest.memos_release, "2.0.33")
+        self.assertEqual(
+            manifest.memos_source_commit,
+            "78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad",
+        )
+        self.assertEqual(manifest.embedding_dimension, 768)
+        self.assertEqual(
+            manifest.embedding_manifest_digest,
+            "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f",
+        )
+        self.assertFalse(manifest.native_extract_enabled)
+        self.assertFalse(manifest.native_chat_enabled)
+        self.assertEqual(len(manifest.artifact_sha256), 64)
 
     def test_common_reader_covers_every_method_and_backend(self) -> None:
         self.assertEqual(COMMON_RESPONSE_READER.backends, frozenset(BACKENDS))

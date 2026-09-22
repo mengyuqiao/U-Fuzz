@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import tomllib
 import unittest
 
-from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
+from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter, MemosAdapter
 from ufuzz.benchmarks import LoCoMoLoader, LongMemEvalSLoader
 from ufuzz.structural import (
     StructuralIndexBuilder,
@@ -146,6 +146,11 @@ class BackendContractTests(unittest.TestCase):
         )
         self.assertIn("graphiti-core==0.30.2", extras["graphiti"])
         self.assertIn("neo4j==5.26.0", extras["graphiti"])
+        self.assertTrue(any(
+            "78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad" in requirement
+            for requirement in extras["memos"]
+        ))
+        self.assertIn("qdrant-client==1.16.2", extras["memos"])
 
     def test_initialization_artifact_digest_is_stable(self) -> None:
         checkpoint = next(LoCoMoLoader().load(FIXTURE, verify_artifact=False))
@@ -173,8 +178,9 @@ class BackendContractTests(unittest.TestCase):
             Mem0Adapter().capabilities(),
             AMemAdapter().capabilities(),
             GraphitiAdapter().capabilities(),
+            MemosAdapter().capabilities(),
         ]
-        self.assertEqual({r.backend for r in reports}, {"mem0", "a-mem", "graphiti"})
+        self.assertEqual({r.backend for r in reports}, {"mem0", "a-mem", "graphiti", "memos"})
         for report in reports:
             self.assertIn("initialization_equivalence", report.operations)
             self.assertIn("provenance", report.operations)

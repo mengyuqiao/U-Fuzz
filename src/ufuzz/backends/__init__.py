@@ -12,6 +12,7 @@ from .base import (
 )
 from .graphiti import GraphitiAdapter
 from .mem0 import Mem0Adapter
+from .memos import MemosAdapter
 
 __all__ = [
     "AMemAdapter",
@@ -22,6 +23,7 @@ __all__ = [
     "GraphitiAdapter",
     "InitializationArtifact",
     "Mem0Adapter",
+    "MemosAdapter",
     "OperationReceipt",
     "StateHandle",
 ]

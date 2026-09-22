@@ -23,6 +23,11 @@ amem = [
   "openai==2.45.0",
 ]
 graphiti = ["graphiti-core==0.30.2", "neo4j==5.26.0"]
+memos = [
+  "MemoryOS @ git+https://github.com/MemTensor/MemOS.git@78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad",
+  "qdrant-client==1.16.2",
+  "ollama==0.5.0",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

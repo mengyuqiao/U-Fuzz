@@ -41,7 +41,16 @@ as validation tracks and cannot silently replace the native primary profile.
   configuration, protection from shared mutable search recipes, and a
   materializer with replay, inventory, graph-transition, lineage, and cleanup
   proof.
-- **MemOS** is an intended native primary target and is not production-ready. It requires an exact source/profile pin and capability/materialization proof for inventory, ranked retrieval, projection, provenance, initialization equivalence and E0, update/delete/unrelated change, replacement/merge/split where applicable, derived state, replay/rebinding, isolation, lineage, cleanup, benchmark ingestion, and exact query forwarding. Generic E0 or lineage rules are not weakened to force inclusion.
+- **MemOS** uses the frozen profile **MemOS v2.0.33 using its
+  GeneralTextMemory textual-memory backend**, source commit
+  `78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad`. It directly constructs
+  deterministic `TextualMemoryItem` entries and uses native
+  `add/search/get_all/update/delete` with isolated embedded Qdrant, cosine
+  retrieval, and a guarded 768-dimensional local `nomic-embed-text` manifest.
+  The profile does not use Tree memory, MemReader/native extraction, native
+  feedback interpretation, MemScheduler, native chat inference, conflict or
+  merge inference, or agentic/deep retrieval. Merge and split are inapplicable;
+  updates preserve physical ID and initialized lineage.
 
 None of the intended native profiles is production-ready merely because a
 generic backend contract exists.
@@ -236,9 +245,9 @@ methods for that backend.
 ## Backend and throughput dependency
 
 Native profiles and materializers are validated before final retrieval-k and
-model pilots: define target profiles, validate Mem0 Profile B, implement and
-validate A-Mem, Graphiti, and MemOS materializers, then prove isolation,
-replay, inventory, lineage, and transition behavior.
+model pilots. MemOS GeneralText capability and materialization are frozen;
+Mem0 Profile B and the A-Mem and Graphiti production materializers remain to
+be validated, followed by benchmark-scale isolation and throughput proof.
 
 The local RQ1--RQ3 plan has 1,440,000 valid executions and, without a proven
 exact evaluator router, the same number of response and evaluator records. The

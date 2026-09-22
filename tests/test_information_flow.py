@@ -34,6 +34,7 @@ from ufuzz.materialization import (
 from ufuzz.evaluation_contract import Backend, NativeMemoryLLMProvider
 from ufuzz.production_config_contract import (
     InvariantBackendSubstrateManifest,
+    MEMOS_GENERAL_TEXT_PROFILE_MANIFEST,
     NativeMemoryLLMConfigurationManifest,
     ProviderSubstrateBinding,
     RQ4EmbeddingControlEvidence,
@@ -299,6 +300,16 @@ class _GraphitiObjectsByUuid:
 
 
 class InformationFlowRegressionTests(unittest.TestCase):
+    def test_memos_profile_manifest_contains_no_credentials_or_evaluator_state(self) -> None:
+        manifest = MEMOS_GENERAL_TEXT_PROFILE_MANIFEST
+        self.assertSearchSafe(manifest)
+        artifact = manifest.artifact_bytes.lower()
+        for forbidden in (
+            b"api_key", b"api_secret", b"bearer_token", b"credential",
+            b"gold_answer", b"failure_surface", b"uf_at_b",
+        ):
+            self.assertNotIn(forbidden, artifact)
+
     def test_native_memory_llm_manifest_contains_configuration_not_credentials(self) -> None:
         manifest = NativeMemoryLLMConfigurationManifest(
             NativeMemoryLLMProvider.OPENAI,

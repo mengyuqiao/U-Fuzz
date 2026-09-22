@@ -21,6 +21,13 @@ Memory systems:
 - Graphiti
 - MemOS
 
+The MemOS system is reported precisely as **MemOS v2.0.33 using its
+GeneralTextMemory textual-memory backend** (source commit
+`78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad`). Benchmark memories are direct,
+deterministic `TextualMemoryItem` entries. The selected profile excludes Tree
+memory, MemReader extraction, native feedback interpretation, native chat, and
+agentic/deep retrieval.
+
 Benchmarks:
 
 - LoCoMo

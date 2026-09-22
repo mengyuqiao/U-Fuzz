@@ -5,7 +5,7 @@ import importlib.util
 import os
 import unittest
 
-from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter
+from ufuzz.backends import AMemAdapter, GraphitiAdapter, InitializationArtifact, Mem0Adapter, MemosAdapter
 from ufuzz.domain import (
     BenchmarkCheckpoint,
     BenchmarkQuery,
@@ -207,6 +207,11 @@ class LiveBackendPrerequisiteTests(unittest.TestCase):
         )
         self.assertIn("0.30.2", report.version_or_commit)
 
+    def test_memos_prerequisites_are_explicit(self) -> None:
+        report = MemosAdapter().capabilities()
+        self.assertEqual(report.available, importlib.util.find_spec("memos") is not None)
+        self.assertIn("78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad", report.version_or_commit)
+
 
 @unittest.skipUnless(
     os.environ.get("UFUZZ_RUN_LIVE_MEM0") == "1",
@@ -266,6 +271,51 @@ class GraphitiLiveSmokeTests(unittest.TestCase):
                 graphiti=True,
             )
         )
+
+
+@unittest.skipUnless(
+    os.environ.get("UFUZZ_RUN_LIVE_MEMOS") == "1",
+    "set UFUZZ_RUN_LIVE_MEMOS=1 to run the pinned MemOS GeneralText smoke test",
+)
+class MemosLiveSmokeTests(unittest.TestCase):
+    def test_full_public_api_smoke(self) -> None:
+        if os.environ.get("UFUZZ_MEMOS_DEDICATED_PROCESS") != "1":
+            self.fail("UFUZZ_MEMOS_DEDICATED_PROCESS=1 is required")
+        if importlib.util.find_spec("memos") is None:
+            self.fail("pinned MemoryOS v2.0.33 is not installed")
+        async def exercise() -> None:
+            adapter = MemosAdapter()
+            await _exercise_backend(adapter, graphiti=False)
+            checkpoint, _ = _synthetic_checkpoint()
+            artifact = InitializationArtifact.create(
+                checkpoint.checkpoint_id,
+                checkpoint.sources,
+                {"memos_profile_id": "live-smoke-isolation"},
+            )
+            a = await adapter.replay_state(artifact)
+            adapter_b = MemosAdapter()
+            b = await adapter_b.replay_state(artifact)
+            try:
+                before_b = await adapter_b.observable_state(b)
+                target = a.backend_state.get_all()[0]
+                # Public retrieval supplies exact provenance without using
+                # private storage or enumeration order as replay identity.
+                record = (await adapter.retrieve(a, target.memory, 1))[0]
+                await adapter.update(
+                    a, record.local_id, record.text + " Updated.",
+                    provenance_ids=record.provenance_ids,
+                )
+                if await adapter_b.observable_state(b) != before_b:
+                    raise AssertionError("MemOS state A mutation changed isolated state B")
+                b_dir = b.metadata["state_dir"]
+                await adapter.teardown(a)
+                if not os.path.isdir(b_dir):
+                    raise AssertionError("MemOS cleanup A removed isolated state B")
+            finally:
+                await adapter.teardown(a)
+                await adapter_b.teardown(b)
+
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":
