@@ -3,7 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
-from ufuzz.benchmarks import LoCoMoLoader, LongMemEvalSLoader
+from ufuzz.benchmarks import (
+    LoCoMoLoader,
+    LongMemEvalSLoader,
+    resolve_answer_session_scope,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,6 +36,8 @@ class LoCoMoLoaderTests(unittest.TestCase):
         checkpoints = list(LoCoMoLoader().load(path))
         self.assertEqual(len(checkpoints), 10)
         self.assertTrue(all(checkpoint.sources for checkpoint in checkpoints))
+        self.assertEqual(sum(len(checkpoint.sources) for checkpoint in checkpoints), 5_882)
+        self.assertEqual(sum(len(checkpoint.queries) for checkpoint in checkpoints), 1_986)
 
 
 class LongMemEvalLoaderTests(unittest.TestCase):
@@ -45,7 +51,8 @@ class LongMemEvalLoaderTests(unittest.TestCase):
         self.assertEqual(len(checkpoint.sources), 4)
         self.assertEqual(
             checkpoint.sources[0].provenance_id,
-            "longmemeval-s-cleaned:q-test:session-1:turn-0000",
+            "longmemeval-s-cleaned:q-test:session-occurrence-0000:"
+            "session-1:turn-0000:ordinal-000001",
         )
         self.assertIs(checkpoint.sources[0].raw["has_answer"], True)
         self.assertEqual(checkpoint.sources[-1].raw["fixture_extra"], "preserved")
@@ -58,13 +65,46 @@ class LongMemEvalLoaderTests(unittest.TestCase):
             self.skipTest("frozen LongMemEval-S artifact is not resolved locally")
         loader = LongMemEvalSLoader()
         count = 0
+        source_count = 0
         answer_types: set[type[object]] = set()
         for checkpoint in loader.load(path):
             count += 1
+            source_count += len(checkpoint.sources)
             self.assertEqual(len(checkpoint.queries), 1)
             answer_types.add(type(checkpoint.queries[0].raw["answer"]))
+            provenance = [source.provenance_id for source in checkpoint.sources]
+            self.assertEqual(len(provenance), len(set(provenance)))
+            scope = resolve_answer_session_scope(
+                checkpoint,
+                [str(value) for value in checkpoint.raw["answer_session_ids"]],
+            )
+            self.assertTrue(scope)
         self.assertEqual(count, 500)
+        self.assertEqual(source_count, 246_750)
         self.assertEqual(answer_types, {str, int})
+
+    def test_repeated_session_ids_are_occurrence_qualified_and_all_resolve(self) -> None:
+        loader = LongMemEvalSLoader()
+        first = next(
+            loader.load(
+                FIXTURES / "longmemeval_s_repeated_session.json",
+                verify_artifact=False,
+            )
+        )
+        second = next(
+            loader.load(
+                FIXTURES / "longmemeval_s_repeated_session.json",
+                verify_artifact=False,
+            )
+        )
+        first_ids = tuple(source.provenance_id for source in first.sources)
+        self.assertEqual(first_ids, tuple(source.provenance_id for source in second.sources))
+        self.assertEqual(len(first_ids), len(set(first_ids)))
+        self.assertEqual(len(first_ids), 4)
+        self.assertIn("session-occurrence-0000", first_ids[0])
+        self.assertIn("session-occurrence-0001", first_ids[2])
+        resolved = resolve_answer_session_scope(first, ["session-repeat"])
+        self.assertEqual(tuple(source.provenance_id for source in resolved), first_ids)
 
 
 if __name__ == "__main__":

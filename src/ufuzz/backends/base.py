@@ -92,6 +92,8 @@ class InitializationArtifact:
                 speaker=source.speaker,
                 role=source.role,
                 raw={},
+                session_occurrence=source.session_occurrence,
+                turn_index=source.turn_index,
             )
             for source in sources
         )

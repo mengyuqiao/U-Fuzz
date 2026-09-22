@@ -1,0 +1,22 @@
+[
+  {
+    "question_id": "q-repeat",
+    "question_type": "single-session-user",
+    "question": "What color is the bicycle?",
+    "question_date": "2025-01-03",
+    "answer": "blue",
+    "answer_session_ids": ["session-repeat"],
+    "haystack_dates": ["2025-01-01", "2025-01-02"],
+    "haystack_session_ids": ["session-repeat", "session-repeat"],
+    "haystack_sessions": [
+      [
+        {"role": "user", "content": "The old bicycle was green."},
+        {"role": "assistant", "content": "I noted the old color."}
+      ],
+      [
+        {"role": "user", "content": "The bicycle is now blue.", "has_answer": true},
+        {"role": "assistant", "content": "I noted the new color."}
+      ]
+    ]
+  }
+]

@@ -115,6 +115,8 @@ class ProvenanceRecord:
     timestamp: str | None
     speaker: str | None
     role: str | None
+    session_occurrence: int | None
+    turn_index: int | None
 
     @classmethod
     def from_source(cls, source: SourceUnit) -> "ProvenanceRecord":
@@ -129,6 +131,8 @@ class ProvenanceRecord:
             timestamp=source.timestamp,
             speaker=source.speaker,
             role=source.role,
+            session_occurrence=source.session_occurrence,
+            turn_index=source.turn_index,
         )
 
 

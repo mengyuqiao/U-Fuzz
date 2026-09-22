@@ -56,9 +56,27 @@ class SourceUnit:
     speaker: str | None
     role: str | None
     raw: JsonMapping
+    session_occurrence: int | None = None
+    turn_index: int | None = None
 
     @property
     def provenance_id(self) -> str:
+        if self.session_occurrence is not None or self.turn_index is not None:
+            if self.session_occurrence is None or self.turn_index is None:
+                raise ValueError(
+                    "occurrence-qualified provenance requires both "
+                    "session_occurrence and turn_index"
+                )
+            return ":".join(
+                (
+                    self.benchmark,
+                    self.checkpoint_id,
+                    f"session-occurrence-{self.session_occurrence:04d}",
+                    self.session_id,
+                    f"turn-{self.turn_index:04d}",
+                    f"ordinal-{self.ordinal:06d}",
+                )
+            )
         return ":".join(
             (self.benchmark, self.checkpoint_id, self.session_id, self.source_id)
         )

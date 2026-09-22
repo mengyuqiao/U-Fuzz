@@ -107,6 +107,8 @@ class LongMemEvalSLoader(BenchmarkLoader):
                         speaker=None,
                         role=role,
                         raw=turn,
+                        session_occurrence=session_index,
+                        turn_index=turn_index,
                     )
                 )
 
@@ -138,3 +140,27 @@ class LongMemEvalSLoader(BenchmarkLoader):
                 "schema_fields": tuple(record.keys()),
             },
         )
+
+
+def resolve_answer_session_scope(
+    checkpoint: BenchmarkCheckpoint,
+    answer_session_ids: tuple[str, ...] | list[str],
+) -> tuple[SourceUnit, ...]:
+    """Resolve every occurrence of each native LongMemEval session ID.
+
+    Native ``answer_session_ids`` identify the benchmark session label, not a
+    unique occurrence. Repeated labels therefore intentionally resolve to all
+    matching occurrences until evaluator-only semantic preprocessing selects
+    exact supporting turns or spans.
+    """
+
+    if checkpoint.benchmark != "longmemeval-s-cleaned":
+        raise ValueError("answer-session scope requires a LongMemEval-S checkpoint")
+    requested_set = {str(value) for value in answer_session_ids}
+    resolved = tuple(
+        source for source in checkpoint.sources if source.session_id in requested_set
+    )
+    missing = sorted(requested_set - {source.session_id for source in resolved})
+    if missing:
+        raise ValueError(f"answer_session_ids do not resolve: {missing}")
+    return resolved
