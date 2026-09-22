@@ -129,13 +129,13 @@ AMEM_NATIVE_TARGET = BackendProfileStatus(
 )
 GRAPHITI_NATIVE_TARGET = BackendProfileStatus(
     Backend.GRAPHITI,
-    "graphiti-native-primary-unbound",
+    "graphiti-native:eaa41286:entity-edge:neo4j:v1",
     BackendProfileUse.PRIMARY_NATIVE,
-    BackendReadiness.REQUIRES_MATERIALIZER_AND_REPLAY_PROOF,
+    BackendReadiness.REQUIRES_NATIVE_PROFILE_VALIDATION,
     True,
     False,
     False,
-    False,
+    True,
 )
 MEMOS_NATIVE_TARGET = BackendProfileStatus(
     Backend.MEMOS,

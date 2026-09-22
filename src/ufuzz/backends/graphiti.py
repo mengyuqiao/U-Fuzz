@@ -43,6 +43,8 @@ class GraphitiDeletionCertificate:
 
 
 class GraphitiAdapter(BackendAdapter):
+    _process_owner_state_id: str | None = None
+
     def __init__(
         self,
         *,
@@ -168,6 +170,11 @@ class GraphitiAdapter(BackendAdapter):
     async def create_isolated_state(
         self, artifact: InitializationArtifact
     ) -> StateHandle:
+        if self._states or type(self)._process_owner_state_id is not None:
+            raise RuntimeError(
+                "Graphiti's scientific search configuration is process-scoped; "
+                "only one materialized campaign state is safe per process"
+            )
         state_id = f"ufuzz-{artifact.checkpoint_id}-{uuid4().hex}"
         state = StateHandle(
             backend="graphiti",
@@ -185,6 +192,7 @@ class GraphitiAdapter(BackendAdapter):
         self._episode_provenance[state_id] = {}
         self._active_episodes[state_id] = set()
         self._deletion_certificates[state_id] = {}
+        type(self)._process_owner_state_id = state_id
         return state
 
     @staticmethod
@@ -632,6 +640,45 @@ class GraphitiAdapter(BackendAdapter):
             self._active_episodes[state.state_id].remove(episode_uuid)
             self._episode_provenance[state.state_id].pop(episode_uuid, None)
         self._deletion_certificates[state.state_id].clear()
+        await self._clear_owned_group(state)
+
+    async def _clear_owned_group(self, state: StateHandle) -> None:
+        """Remove all state in the adapter-owned group, including orphan nodes.
+
+        Real graphiti-core profiles use the pinned official group-scoped
+        ``clear_data`` maintenance operation.  Test doubles may expose the same
+        semantic operation as ``clear_group`` without importing Graphiti.
+        """
+
+        backend = state.backend_state
+        test_cleanup = getattr(backend, "clear_group", None)
+        if callable(test_cleanup):
+            await test_cleanup(state.metadata["group_id"])
+            return
+        driver = getattr(backend, "driver", None)
+        if driver is None:
+            # Dependency-free adapter contract doubles have no persistent graph.
+            return
+        from graphiti_core.utils.maintenance import clear_data
+
+        group_id = state.metadata["group_id"]
+        await clear_data(driver, group_ids=[group_id])
+        namespaces = (
+            getattr(getattr(backend, "edges", None), "entity", None),
+            getattr(getattr(backend, "nodes", None), "entity", None),
+            getattr(getattr(backend, "nodes", None), "episode", None),
+            getattr(getattr(backend, "nodes", None), "community", None),
+            getattr(getattr(backend, "nodes", None), "saga", None),
+        )
+        for namespace in namespaces:
+            get_by_group_ids = getattr(namespace, "get_by_group_ids", None)
+            if not callable(get_by_group_ids):
+                raise RuntimeError("Graphiti group cleanup cannot be verified completely")
+            remaining = await get_by_group_ids(
+                [group_id], limit=None, uuid_cursor=None
+            )
+            if remaining:
+                raise RuntimeError("Graphiti group cleanup left persistent state")
 
     async def teardown(self, state: StateHandle) -> None:
         try:
@@ -641,3 +688,5 @@ class GraphitiAdapter(BackendAdapter):
             self._active_episodes.pop(state.state_id, None)
             self._episode_provenance.pop(state.state_id, None)
             self._deletion_certificates.pop(state.state_id, None)
+            if type(self)._process_owner_state_id == state.state_id:
+                type(self)._process_owner_state_id = None

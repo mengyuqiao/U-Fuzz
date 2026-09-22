@@ -42,10 +42,16 @@ as validation tracks and cannot silently replace the native primary profile.
   Update/Delete/Unrelated-Change transitions. Production still requires the
   exact native LLM and embedding configuration to pass live root-replay
   validation; any replay drift fails closed before a state is published.
-- **Graphiti** requires a native primary profile, isolated database/search
-  configuration, protection from shared mutable search recipes, and a
-  materializer with replay, inventory, graph-transition, lineage, and cleanup
-  proof.
+- **Graphiti** is pinned to `graphiti-core==0.30.2`, tag commit
+  `eaa4128681bc53487138a4bbc22d58336ebe70d2`, the Neo4j Python driver 5.26.0,
+  and Neo4j service 5.26.2. Its public
+  E0 unit is the group-scoped `EntityEdge`. The materializer freezes complete
+  edge inventory, endpoint/temporal/provenance projection, exact root
+  rebinding, ranked search, receipt-bound append-only replacement/split
+  transitions, and structurally certified episode deletion. Dedicated-process
+  execution prevents shared mutable search-recipe interference. Production
+  still requires exact LLM/embedder/reranker bindings and live replay proof;
+  graph extraction drift or collateral edges fail closed.
 - **MemOS** uses the frozen profile **MemOS v2.0.33 using its
   GeneralTextMemory textual-memory backend**, source commit
   `78a372a4fc853a24d2a78efa3b4bbbd27ab9f7ad`. It directly constructs
@@ -251,9 +257,9 @@ methods for that backend.
 
 Native profiles and materializers are validated before final retrieval-k and
 model pilots. MemOS GeneralText capability and materialization are frozen.
-A-Mem materialization is complete and fail-closed, while its exact native model
-binding and live replay validation remain. Graphiti materialization remains to
-be completed, followed by benchmark-scale isolation and throughput proof.
+A-Mem and Graphiti materialization are complete and fail-closed, while their
+exact native model bindings and live replay validation remain. Benchmark-scale
+isolation and throughput proof follow the remaining model/configuration freeze.
 
 The local RQ1--RQ3 plan has 1,440,000 valid executions and, without a proven
 exact evaluator router, the same number of response and evaluator records. The

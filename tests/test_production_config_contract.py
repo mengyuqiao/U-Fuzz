@@ -164,6 +164,13 @@ class ProductionConfigurationContractTests(unittest.TestCase):
             AMEM_NATIVE_TARGET.readiness,
             BackendReadiness.REQUIRES_NATIVE_PROFILE_VALIDATION,
         )
+        self.assertTrue(GRAPHITI_NATIVE_TARGET.materializer_complete)
+        self.assertFalse(GRAPHITI_NATIVE_TARGET.exact_configuration_frozen)
+        self.assertFalse(GRAPHITI_NATIVE_TARGET.live_validation_complete)
+        self.assertIs(
+            GRAPHITI_NATIVE_TARGET.readiness,
+            BackendReadiness.REQUIRES_NATIVE_PROFILE_VALIDATION,
+        )
         self.assertTrue(
             all(
                 profile.profile_use is BackendProfileUse.PRIMARY_NATIVE
