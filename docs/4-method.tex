@@ -63,7 +63,11 @@ temporal scope, and \(p\) is a stable benchmark source identifier. Backend
 memory identifiers are adapter-local metadata rather than canonical fact
 identities.
 
-The index is partial but certified. Fields may come from benchmark structure,
+The index is query-centered, partial, and certified. Operationally,
+\(\operatorname{BuildDescriptor}(q,H_{1:t},Z)\) constructs a search-safe
+descriptor \(P(x)\) with a finite set of registered mutation opportunities;
+it does not reconstruct every atomic fact or claim global semantic
+completeness. Fields may come from benchmark structure,
 deterministic or rule-based extraction, or LLM-assisted extraction, but an LLM
 judgment alone cannot certify a field. Every field used for applicability must
 be checked independently of mutant execution and traceable to stable
@@ -130,17 +134,16 @@ one designated primary slot in \(\operatorname{QI}(q)\), chosen from entity,
 relation, or temporal scope, while preserving the remaining slots and
 constraints. The replacement must have provenance-backed canonical support
 for the unchanged request structure. An \emph{unsupported} mutation uses a
-structurally well-formed replacement for which support is absent from the
-current checkpoint.
+structurally well-formed, memory-exclusive session-local replacement derived
+deterministically from the checkpoint, query, and opportunity identity.
 
 Unsupportedness requires a checkpoint-relative certificate
 \(operatorname{Absent}(z,r,\tau,M)=1\), or the corresponding form without
-\(\tau\). The verifier must inspect the full checkpoint provenance relevant to
-the entity, relation, and scope; absence from a partial extracted fact table is
-insufficient. Deterministic matching, structured lookup, and LLM-assisted
-analysis may contribute, but an LLM assertion alone is insufficient. Failed
-retrieval and incorrect response behavior are never used to establish
-unsupportedness.
+\(\tau\). The verifier scans the normalized raw checkpoint text and registered
+identifiers for the exact synthetic identifier. It never infers absence from
+a partial extracted fact table, failed retrieval, a response, or an LLM
+assertion. The reserved target is explicitly session-local rather than an
+ordinary public-knowledge entity.
 
 \paragraph{Memory-state mutations.}
 A memory-state mutation keeps \(q\) fixed and applies a controlled operation

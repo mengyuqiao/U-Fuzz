@@ -230,7 +230,10 @@ A meaning-preserving candidate is valid only when its certified QueryIntent
 preserves \(e,r,\tau,c,\alpha\). A target-changing candidate is valid only
 when the designated slot has the fixed replacement and the remaining primary
 slots and constraints are unchanged. Unsupported validation additionally
-requires the precomputed checkpoint-wide absence certificate.
+requires the precomputed exact raw-state absence certificate for the reserved,
+session-local synthetic target. This certificate scans the normalized raw
+checkpoint text and registered identifiers; it does not infer absence from a
+partial semantic inventory.
 
 \paragraph{Memory-state validation.}
 Memory validation checks \(M\rightarrow M'\) independently of query behavior.

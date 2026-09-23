@@ -103,6 +103,16 @@ model. Online roles cannot be starved by deferred response/evaluator backlogs.
 
 ## Structural certification and evaluator
 
+The frozen production candidate for benchmark preprocessing is
+`PG_PREPROCESS_V1`, documented in
+[`pg_preprocessing_candidate.md`](pg_preprocessing_candidate.md). It realizes
+the Method's `BuildDescriptor` as a bounded, query-centered, search-safe
+`P(x)` and `BuildReference` as a bounded evaluator-only `G(x)`. It uses
+seed-local relation slots and a finite set of exactly grounded registered
+mutation opportunities. It makes no checkpoint-wide atomic-fact or global
+semantic-completeness claim. Human semantic validation remains required before
+this candidate can become the production annotation configuration.
+
 Structural and semantic certification is deterministic first. It uses
 benchmark evidence, normalized structural evidence, certified provenance, and
 backend-state evidence wherever those can decide the obligation. A model may

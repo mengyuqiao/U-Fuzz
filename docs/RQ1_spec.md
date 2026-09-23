@@ -307,8 +307,13 @@ answerability, and other answer-affecting constraints. A target-changing
 mutation changes exactly one designated primary slot from entity, attribute,
 or time scope while preserving the remaining primary slots and constraints.
 
-Absence from the partial canonical-fact table is insufficient to establish an
-unsupported query. Define a checkpoint-relative absence certificate:
+Absence from a partial canonical-fact table is insufficient to establish an
+unsupported query. The frozen query-centered candidate therefore uses a
+memory-exclusive, session-local synthetic target derived deterministically
+from checkpoint, query, and opportunity identity. Its exact normalized
+identifier must be absent from all raw checkpoint source text and registered
+identifiers before execution. This is the checkpoint-relative absence
+certificate for this mutation family:
 
     Absent(z, r, tau, M)
 
@@ -316,11 +321,10 @@ or, when no temporal scope applies:
 
     Absent(z, r, M)
 
-The certificate must be established before execution by a checkpoint-wide
-provenance verification procedure. The verifier inspects the full checkpoint
-provenance relevant to the requested entity, relation, and scope, not only
-F_M. It may use deterministic matching, structured lookup, and LLM-assisted
-analysis, but an LLM assertion alone is insufficient.
+The certificate uses an exact raw-state scan and deterministic namespace rule;
+it never infers semantic absence from partial extraction, backend retrieval,
+or a model response. The target is explicitly synthetic and session-local,
+not an ordinary public-knowledge entity.
 
 Unsupported means unsupported with respect to the current checkpoint, not
 false or unknown in the real world.
