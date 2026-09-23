@@ -112,3 +112,19 @@ hold. Human accuracy is not validated until this gate is completed.
 
 Any rule change after the first human label requires a new preprocessing
 contract version and a new independent validation protocol.
+
+## Full generation runner
+
+`python -m ufuzz.pg_generate` provides `plan`, `run`, `resume`, `merge`, and
+`validate` modes. Planning assigns immutable query IDs with the first 64 bits
+of SHA-256 modulo the declared shard count. Each terminal query record is
+written through a temporary file, `fsync`, and atomic rename. Resume validates
+and skips committed terminals rather than recomputing them.
+
+Each raw call records its task and query IDs, call kind, canonical input and
+prompt digests, frozen model identity, token counts, raw-output digest,
+canonical parsed output, and parse error. Final P and G JSONL streams are
+physically separate. Merge requires exact shard membership, unique complete
+query identity, exact provenance/span grounding, synthetic-target absence,
+native G scope, and the search/evaluator information firewall. Artifacts
+created before human adjudication carry `PENDING_HUMAN_VALIDATION`.
