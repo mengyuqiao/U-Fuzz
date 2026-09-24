@@ -1,7 +1,9 @@
 # Query-centered P/G preprocessing candidate
 
-`PG_PREPROCESS_V1` is the frozen production candidate awaiting independent
-human validation. It binds the two query-centered artifacts used by the
+`PG_PREPROCESS_V2` is the frozen production-executable candidate awaiting
+independent human validation. `PG_PREPROCESS_V1` is preserved unchanged and
+has status `SUPERSEDED_BEFORE_HUMAN_VALIDATION`; no human labels had been
+collected for it. Both bind the two query-centered artifacts used by the
 current Method:
 
 - `BuildDescriptor(q, H_1:t, Z)` produces the search-safe descriptor `P(x)`.
@@ -20,16 +22,63 @@ and Torch 2.8.0+cu128 in BF16 with SDPA. Decoding uses
 `do_sample=False`, `enable_thinking=False`, seed 1729, and no retries. The
 tokenizer, tokenizer configuration, model configuration, chat template, exact
 prompt texts, output limits, and their SHA-256 digests are part of the
-canonical manifest returned by
-`ufuzz.pg_preprocess.pg_preprocess_v1_manifest()`.
+canonical V2 manifest returned by
+`ufuzz.pg_preprocess.pg_preprocess_v2_manifest()`.
 
-Source selection uses the frozen 768-dimensional `nomic-embed-text` weights
+The one-time `PG_SELECTOR_SNAPSHOT_V2` construction uses the frozen
+768-dimensional `nomic-embed-text` weights
 whose immutable manifest digest is
 `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`.
-Cosine ranking selects the top 64 source units, with source ordinal and
-provenance ID as deterministic ties. An unrelated-change candidate pool takes
-at most 16 sources outside the top 64 in event-keyed SHA-256 order. The moving
-text label `nomic-embed-text:latest` is transport metadata only.
+Cosine ranking selects top-64 membership, with source ordinal and provenance
+ID as deterministic ties. An unrelated-change candidate pool takes at most 16
+sources outside top 64 in event-keyed SHA-256 order. The first successfully
+completed 2,486-query snapshot is immutable and its SHA-256 is part of the V2
+contract. P/G workers never call nomic or recompute membership. Both selected
+sets are presented to Qwen by source ordinal and provenance ID, so embedding
+score order never enters semantic prompts. The moving text label
+`nomic-embed-text:latest` is transport metadata only.
+
+## Production-executable V2 contract
+
+V1 left source membership identity, presentation, and generation call
+boundaries underspecified.
+In the diagnosed production dry query, current selection retained the same
+top-64 membership but changed ordering in 11 positions, first at rank index 1.
+That presentation change altered Target-Changing, Update, and Deletion output.
+The corresponding G output retained benchmark gold content and grounded
+support semantics but changed its generated canonical representation. This is
+classified as `EXECUTABLE-CONTRACT UNDERSPECIFICATION`, not backend,
+cross-GPU, or scientific-method failure.
+
+Across the fixed 55-query population, two fresh nomic service/client epochs
+agreed on top-64 membership for only 42 records. Live floating-point selector
+recomputation is therefore retired as scientific identity. V2 consumes the
+single frozen selector snapshot and performs no selector service calls.
+
+Snapshot construction keeps cosine top-64 membership, then stores that set in
+source-ordinal/provenance order. It selects the outside pool by the frozen
+event hash and stores its membership in the same checkpoint-native order. The
+one snapshot epoch uses a long-lived localhost Ollama service on GPU 5 with
+`OLLAMA_NUM_PARALLEL=1`; the service is stopped after artifact validation.
+Queries are processed in benchmark, checkpoint-ID, then query-ID order.
+Source embeddings are cached only within one immutable loaded checkpoint.
+If either the client or selector service stops before all 2,486 records are
+validated, that incomplete epoch is discarded and construction restarts at
+query one; records from separate service epochs are never combined.
+
+Every scientific task uses exactly one `model.generate` invocation. Semantic
+batching is forbidden; independent query workers provide parallelism. Within
+a query the runner freezes source selection and presentation, query-slot
+parsing, combined bounded relevant/outside extraction, relevant and
+target-changing relation/entity verification followed by eligibility,
+outside eligibility followed by query relevance, opportunity registration,
+G scope and chunk construction, one call per G chunk, canonical merge, and
+final validation.
+
+After exact validation, G support regions are deduplicated exactly and sorted
+by provenance ID, character bounds, and component ID. Accepted options sort
+their immutable components and are then deduplicated and sorted by canonical
+bytes. Similar text never causes semantic merging.
 
 ## Search-safe `P(x)`
 
@@ -128,3 +177,16 @@ physically separate. Merge requires exact shard membership, unique complete
 query identity, exact provenance/span grounding, synthetic-target absence,
 native G scope, and the search/evaluator information firewall. Artifacts
 created before human adjudication carry `PENDING_HUMAN_VALIDATION`.
+
+## Downstream paper-facing artifact contract
+
+The evaluator/campaign phase must bind schemas and ultimately emit exactly:
+
+- `results/rq1_results.csv`
+- `results/rq1_summary.csv`
+- `results/rq2_prefix_results.csv`
+- `results/rq2_prefix_summary.csv`
+- `results/rq3_ablation_results.csv`
+- `results/rq3_ablation_summary.csv`
+- `results/confirmed_faults.jsonl`
+- `results/experiment_manifest.json`

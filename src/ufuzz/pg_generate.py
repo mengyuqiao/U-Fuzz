@@ -1,8 +1,9 @@
-"""Resumable full-benchmark generation for the frozen PG_PREPROCESS_V1 contract.
+"""Resumable full-benchmark generation for the frozen PG_PREPROCESS_V2 contract.
 
 The ordinary test suite exercises planning, durability, merging, and mechanical
-validation with doubles.  Only ``run`` and ``resume`` load the local Qwen model
-and call the frozen localhost embedding service.
+validation with doubles.  Only ``run`` and ``resume`` load the local Qwen
+model; source membership is read from the frozen selector snapshot and no P/G
+mode calls an embedding service.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from hashlib import sha256
 import json
-import math
 import os
 from pathlib import Path
 import random
@@ -22,28 +22,25 @@ import tempfile
 import time
 from typing import Any, Protocol
 import unicodedata
-import urllib.error
-import urllib.request
 
 from ufuzz.benchmarks import LoCoMoLoader, LongMemEvalSLoader, resolve_answer_session_scope
 from ufuzz.domain import BenchmarkCheckpoint, BenchmarkQuery, SourceUnit
 from ufuzz.pg_preprocess import (
-    PG_PREPROCESS_V1,
+    PG_PREPROCESS_V2,
     PG_PREPROCESS_V1_PROMPTS,
     SEARCH_FORBIDDEN_FIELDS,
-    pg_preprocess_v1_manifest,
+    V2_STAGE_ORDER,
+    pg_preprocess_v2_manifest,
 )
+from ufuzz.pg_selector_snapshot import DEFAULT_OUTPUT as DEFAULT_SELECTOR_ROOT, FrozenSelectorSnapshot
 from ufuzz.semantic_sidecar import canonical_bytes, resolve_locomo_gold_field
 
 
-CONTRACT_DIGEST = "c342c97cdebdf89306d06a1c12ceb8702a9a6c8d5f98e0e6a821f2163a07b174"
+CONTRACT_DIGEST = "d1d140c96bfb64cf5759afc5878fce20a8331adb4cd0f6a238e6fbfad44ac7d6"
 SEMANTIC_VALIDATION_STATUS = "PENDING_HUMAN_VALIDATION"
 DEFAULT_LOCOMO = Path("/tmp/ufuzz-datasets/locomo10.json")
 DEFAULT_LONGMEMEVAL = Path("/tmp/ufuzz-datasets/longmemeval_s_cleaned.json")
 DEFAULT_MODEL_PATH = Path("/tmp/memos-v2033-hf-model")
-DEFAULT_OLLAMA_MANIFEST = Path(
-    "/home/yuqiao/.ollama/models/manifests/registry.ollama.ai/library/nomic-embed-text/latest"
-)
 EXPECTED_COUNTS = {"locomo": 1_986, "longmemeval-s-cleaned": 500}
 CALL_LIMITS = {
     "query_slot": 512,
@@ -142,9 +139,9 @@ def create_plan(
     longmemeval: Path = DEFAULT_LONGMEMEVAL,
     selected_query_ids: frozenset[str] | None = None,
 ) -> dict[str, Any]:
-    manifest = pg_preprocess_v1_manifest()
+    manifest = pg_preprocess_v2_manifest()
     if manifest.sha256_digest != CONTRACT_DIGEST:
-        raise RuntimeError("PG_PREPROCESS_V1 contract digest mismatch")
+        raise RuntimeError("PG_PREPROCESS_V2 contract digest mismatch")
     LoCoMoLoader().artifact.verify(locomo)
     LongMemEvalSLoader().artifact.verify(longmemeval)
     planned: list[PlannedQuery] = []
@@ -171,8 +168,10 @@ def create_plan(
         raise RuntimeError(f"selected query IDs not found: {sorted(set(selected_query_ids) - selected_seen)}")
     planned.sort(key=lambda item: item.query_id)
     plan = {
-        "preprocessing_contract": PG_PREPROCESS_V1,
+        "preprocessing_contract": PG_PREPROCESS_V2,
         "contract_digest": CONTRACT_DIGEST,
+        "executable_contract_sha256": manifest.executable_contract_sha256,
+        "selector_snapshot_sha256": manifest.selector_snapshot_sha256,
         "semantic_validation_status": SEMANTIC_VALIDATION_STATUS,
         "num_shards": num_shards,
         "dataset_artifacts": {
@@ -194,6 +193,7 @@ def create_plan(
                 "num_shards": num_shards,
                 "query_ids": [item.query_id for item in planned if item.shard == shard],
                 "contract_digest": CONTRACT_DIGEST,
+                "selector_snapshot_sha256": manifest.selector_snapshot_sha256,
             },
         )
     return plan
@@ -202,10 +202,16 @@ def create_plan(
 def load_plan(root: Path) -> dict[str, Any]:
     path = root / "plan" / "query-shards.json"
     plan = json.loads(path.read_text(encoding="utf-8"))
+    if plan.get("preprocessing_contract") != PG_PREPROCESS_V2:
+        raise RuntimeError("plan preprocessing-contract mismatch")
     if plan.get("contract_digest") != CONTRACT_DIGEST:
         raise RuntimeError("plan contract digest mismatch")
     if plan.get("semantic_validation_status") != SEMANTIC_VALIDATION_STATUS:
         raise RuntimeError("plan semantic-validation status mismatch")
+    if plan.get("executable_contract_sha256") != pg_preprocess_v2_manifest().executable_contract_sha256:
+        raise RuntimeError("plan executable-contract mismatch")
+    if plan.get("selector_snapshot_sha256") != pg_preprocess_v2_manifest().selector_snapshot_sha256:
+        raise RuntimeError("plan selector-snapshot mismatch")
     if _digest(plan["queries"]) != plan.get("query_manifest_sha256"):
         raise RuntimeError("plan query manifest digest mismatch")
     return plan
@@ -239,7 +245,7 @@ class LocalQwenGenerator:
             model_path, local_files_only=True,
             revision="40c069824f4251a91eefaf281ebe4c544efd3e18",
         )
-        if sha256(self._tokenizer.chat_template.encode()).hexdigest() != pg_preprocess_v1_manifest().model["chat_template_sha256"]:
+        if sha256(self._tokenizer.chat_template.encode()).hexdigest() != pg_preprocess_v2_manifest().model["chat_template_sha256"]:
             raise RuntimeError("chat-template digest mismatch")
         self._model = AutoModelForCausalLM.from_pretrained(
             model_path, local_files_only=True,
@@ -290,7 +296,7 @@ class LocalQwenGenerator:
         return {
             "task_id": task_id, "query_id": query_id, "call_kind": kind,
             "canonical_input_sha256": _digest(payload),
-            "prompt_sha256": pg_preprocess_v1_manifest().prompt_sha256[kind],
+            "prompt_sha256": pg_preprocess_v2_manifest().prompt_sha256[kind],
             "model_id": "Qwen/Qwen3-14B",
             "model_revision": "40c069824f4251a91eefaf281ebe4c544efd3e18",
             "input_token_count": input_tokens,
@@ -302,83 +308,10 @@ class LocalQwenGenerator:
         }
 
 
-class NomicSelector:
-    def __init__(
-        self,
-        url: str = "http://127.0.0.1:11500/api/embed",
-        manifest_path: Path = DEFAULT_OLLAMA_MANIFEST,
-    ) -> None:
-        expected = pg_preprocess_v1_manifest().selector["immutable_model_manifest_sha256"]
-        if sha256(manifest_path.read_bytes()).hexdigest() != expected:
-            raise RuntimeError("nomic embedding identity mismatch")
-        self.url = url
-        self._source_cache: dict[str, tuple[tuple[str, ...], list[list[float]]]] = {}
+def canonical_source_presentation(sources: Iterable[SourceUnit]) -> list[SourceUnit]:
+    """Present an already-selected source membership independently of scores."""
 
-    def _embed(self, texts: list[str]) -> list[list[float]]:
-        request = urllib.request.Request(
-            self.url,
-            data=json.dumps({
-                "model": "nomic-embed-text:latest", "input": texts,
-                "truncate": True, "keep_alive": "10m",
-            }).encode(),
-            headers={"Content-Type": "application/json"},
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                values = json.load(response)["embeddings"]
-        except urllib.error.HTTPError as exception:
-            if len(texts) > 1:
-                middle = len(texts) // 2
-                return self._embed(texts[:middle]) + self._embed(texts[middle:])
-            raise RuntimeError(f"embedding failed for one input: {exception.read().decode(errors='replace')}") from exception
-        if len(values) != len(texts) or any(len(value) != 768 for value in values):
-            raise RuntimeError("embedding shape mismatch")
-        return values
-
-    def select(self, checkpoint: BenchmarkCheckpoint, query: BenchmarkQuery) -> dict[str, Any]:
-        sources = list(checkpoint.sources)
-        key = f"{checkpoint.benchmark}\0{checkpoint.checkpoint_id}"
-        source_ids = tuple(source.provenance_id for source in sources)
-        cached = self._source_cache.get(key)
-        if cached is None or cached[0] != source_ids:
-            vectors: list[list[float]] = []
-            for start in range(0, len(sources), 16):
-                vectors.extend(self._embed([source.text for source in sources[start:start + 16]]))
-            self._source_cache[key] = source_ids, vectors
-        else:
-            vectors = cached[1]
-        query_vector = self._embed([query.text])[0]
-        ranked = sorted(
-            zip(sources, vectors, strict=True),
-            key=lambda item: (-_cosine(query_vector, item[1]), item[0].ordinal, item[0].provenance_id),
-        )
-        relevant = [source for source, _ in ranked[: min(64, len(ranked))]]
-        relevant_ids = {source.provenance_id for source in relevant}
-        event = f"{checkpoint.checkpoint_id}\0{query.query_id}\0urc-pool-v1"
-        outside = sorted(
-            (source for source in sources if source.provenance_id not in relevant_ids),
-            key=lambda source: (
-                sha256((event + "\0" + source.provenance_id).encode()).hexdigest(),
-                source.ordinal, source.provenance_id,
-            ),
-        )[:16]
-        synthetic = "ufuzz-session-local-" + sha256(
-            f"{checkpoint.checkpoint_id}\0{query.query_id}\0unsupported-v1".encode()
-        ).hexdigest()[:24]
-        raw_normalized = " ".join(" ".join(source.text.casefold().split()) for source in sources)
-        return {
-            "relevant_candidate_provenance_ids": [source.provenance_id for source in relevant],
-            "unrelated_candidate_provenance_ids": [source.provenance_id for source in outside],
-            "synthetic_unsupported_target": synthetic,
-            "synthetic_exact_absent": synthetic.casefold() not in raw_normalized,
-            "selector_identity": pg_preprocess_v1_manifest().selector,
-        }
-
-
-def _cosine(left: Sequence[float], right: Sequence[float]) -> float:
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+    return sorted(sources, key=lambda source: (source.ordinal, source.provenance_id))
 
 
 def _source_payload(source: SourceUnit) -> dict[str, Any]:
@@ -630,6 +563,42 @@ def _validate_g_call(
     return options, supports, issues
 
 
+def _canonicalize_g_options(values: Sequence[Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """Canonicalize exact answer-component structure without semantic merging."""
+
+    options: dict[bytes, dict[str, Any]] = {}
+    issues: list[str] = []
+    for option in values:
+        if not isinstance(option, Mapping) or set(option) != {"required_components"}:
+            issues.append("accepted_option_schema")
+            continue
+        raw_components = option["required_components"]
+        if not isinstance(raw_components, list) or not raw_components:
+            issues.append("accepted_option_components")
+            continue
+        components: dict[bytes, dict[str, str]] = {}
+        for component in raw_components:
+            if not isinstance(component, Mapping) or set(component) != {"component_id", "value"}:
+                issues.append("accepted_component_schema")
+                continue
+            component_id = _normalize(component["component_id"])
+            value = _normalize(component["value"])
+            if not component_id or not value:
+                issues.append("accepted_component_empty")
+                continue
+            normalized = {"component_id": component_id, "value": value}
+            components[canonical_bytes(normalized)] = normalized
+        if not components:
+            continue
+        ordered = sorted(
+            components.values(),
+            key=lambda item: (item["component_id"], item["value"], canonical_bytes(item)),
+        )
+        normalized_option = {"required_components": ordered}
+        options[canonical_bytes(normalized_option)] = normalized_option
+    return [options[key] for key in sorted(options)], issues
+
+
 def process_query(
     checkpoint: BenchmarkCheckpoint,
     query: BenchmarkQuery,
@@ -681,47 +650,73 @@ def process_query(
     )
     resolved = slot.get("status") == "RESOLVED"
     relevant: list[dict[str, Any]] = []
-    for index, proposition in enumerate(extraction["relevant_propositions"]):
-        eligibility = _validate_eligibility(call(
-            "existing_memory_state", f"relevant:{index}:eligibility",
-            _proposition_payload(checkpoint, proposition, sources[proposition["provenance_id"]]),
-        ))
-        match = _validate_match(call(
+    relevant_matches = [
+        _validate_match(call(
             "relation_entity_match", f"relevant:{index}:match",
             {"query_id": query.query_id, "question": query.text, "relation_slot": slot, "source_proposition": proposition},
         ))
+        for index, proposition in enumerate(extraction["relevant_propositions"])
+    ]
+    relevant_eligibility = [
+        _validate_eligibility(call(
+            "existing_memory_state", f"relevant:{index}:eligibility",
+            _proposition_payload(checkpoint, proposition, sources[proposition["provenance_id"]]),
+        ))
+        for index, proposition in enumerate(extraction["relevant_propositions"])
+    ]
+    for proposition, match, eligibility in zip(
+        extraction["relevant_propositions"], relevant_matches, relevant_eligibility, strict=True
+    ):
         if eligibility["status"] == "ELIGIBLE" and match["relation_match"] == "MATCH" and match["entity_match"] == "MATCH" and match["temporal_compatibility"] == "COMPATIBLE":
             relevant.append(proposition)
     relevant.sort(key=lambda value: (value["source_ordinal"], value["char_start"], canonical_bytes(value)))
 
     target_changing: list[dict[str, Any]] = []
-    for index, opportunity in enumerate(extraction["target_changing"]):
-        proposition = opportunity["proposition"]
-        eligibility = _validate_eligibility(call(
-            "existing_memory_state", f"target-changing:{index}:eligibility",
-            _proposition_payload(checkpoint, proposition, sources[proposition["provenance_id"]]),
-        ))
-        match = _validate_match(call(
+    target_matches = [
+        _validate_match(call(
             "relation_entity_match", f"target-changing:{index}:match",
             {"query_id": query.query_id, "question": query.text, "relation_slot": slot,
              "changed_slot": opportunity["changed_slot"],
              "replacement_target_identity": opportunity["replacement_target_identity"],
-             "source_proposition": proposition},
+             "source_proposition": opportunity["proposition"]},
         ))
+        for index, opportunity in enumerate(extraction["target_changing"])
+    ]
+    target_eligibility = [
+        _validate_eligibility(call(
+            "existing_memory_state", f"target-changing:{index}:eligibility",
+            _proposition_payload(
+                checkpoint, opportunity["proposition"],
+                sources[opportunity["proposition"]["provenance_id"]],
+            ),
+        ))
+        for index, opportunity in enumerate(extraction["target_changing"])
+    ]
+    for opportunity, match, eligibility in zip(
+        extraction["target_changing"], target_matches, target_eligibility, strict=True
+    ):
         if eligibility["status"] == "ELIGIBLE" and all(match[key] != "UNRESOLVED" for key in ("relation_match", "entity_match", "temporal_compatibility")) and opportunity["changed_slot"] in slot.get("replaceable_slots", []):
             target_changing.append(opportunity)
     target_changing.sort(key=lambda value: (value["proposition"]["source_ordinal"], value["proposition"]["char_start"], canonical_bytes(value)))
 
     unrelated: list[dict[str, Any]] = []
-    for index, proposition in enumerate(extraction["unrelated_propositions"]):
-        eligibility = _validate_eligibility(call(
+    unrelated_eligibility = [
+        _validate_eligibility(call(
             "existing_memory_state", f"unrelated:{index}:eligibility",
             _proposition_payload(checkpoint, proposition, sources[proposition["provenance_id"]]),
         ))
-        relevance = _validate_relevance(call(
+        for index, proposition in enumerate(extraction["unrelated_propositions"])
+    ]
+    unrelated_relevance = [
+        _validate_relevance(call(
             "query_relevance", f"unrelated:{index}:relevance",
             {"query_id": query.query_id, "question": query.text, "relation_slot": slot, "source_proposition": proposition},
         ))
+        for index, proposition in enumerate(extraction["unrelated_propositions"])
+    ]
+    for proposition, eligibility, relevance in zip(
+        extraction["unrelated_propositions"], unrelated_eligibility, unrelated_relevance, strict=True
+    ):
         if eligibility["status"] == "ELIGIBLE" and relevance["status"] == "UNRELATED":
             unrelated.append(proposition)
     unrelated.sort(key=lambda value: (value["source_ordinal"], value["char_start"], canonical_bytes(value)))
@@ -777,8 +772,16 @@ def process_query(
         options.extend(call_options)
         supports.extend(call_supports)
         issues.extend(call_issues)
-    options = [value for _, value in sorted({_digest(value): value for value in options}.items())]
-    supports = [value for _, value in sorted({_digest(value): value for value in supports}.items())]
+    options, option_issues = _canonicalize_g_options(options)
+    issues.extend(option_issues)
+    exact_supports = {canonical_bytes(value): value for value in supports}
+    supports = sorted(
+        exact_supports.values(),
+        key=lambda value: (
+            value["provenance_id"], value["char_start"], value["char_end"],
+            _normalize(value["component_id"]), canonical_bytes(value),
+        ),
+    )
     g_resolved = gold_answer is not None and not missing_native and bool(options) and bool(supports)
     if gold_answer is None or missing_native:
         issues.append("gold_authority_or_native_evidence")
@@ -798,8 +801,10 @@ def process_query(
         "issues": issues,
     }
     return {
-        "preprocessing_contract": PG_PREPROCESS_V1,
+        "preprocessing_contract": PG_PREPROCESS_V2,
         "contract_digest": CONTRACT_DIGEST,
+        "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
+        "executable_contract_sha256": pg_preprocess_v2_manifest().executable_contract_sha256,
         "semantic_validation_status": SEMANTIC_VALIDATION_STATUS,
         "query_id": query.query_id, "checkpoint_id": checkpoint.checkpoint_id,
         "benchmark": checkpoint.benchmark, "native_type": str(query.query_type),
@@ -835,8 +840,14 @@ def _walk_keys(value: Any) -> Iterable[str]:
 
 def _validate_terminal(record: Mapping[str, Any], checkpoint: BenchmarkCheckpoint) -> list[str]:
     errors: list[str] = []
+    if record.get("preprocessing_contract") != PG_PREPROCESS_V2:
+        errors.append("preprocessing_contract")
     if record.get("contract_digest") != CONTRACT_DIGEST:
         errors.append("contract_digest")
+    if record.get("selector_snapshot_sha256") != pg_preprocess_v2_manifest().selector_snapshot_sha256:
+        errors.append("selector_snapshot_sha256")
+    if record.get("executable_contract_sha256") != pg_preprocess_v2_manifest().executable_contract_sha256:
+        errors.append("executable_contract")
     if record.get("semantic_validation_status") != SEMANTIC_VALIDATION_STATUS:
         errors.append("semantic_validation_status")
     if record.get("terminal_status") != "TERMINAL":
@@ -847,6 +858,32 @@ def _validate_terminal(record: Mapping[str, Any], checkpoint: BenchmarkCheckpoin
     except RuntimeError:
         errors.append("information_flow")
     selector = record.get("P", {}).get("source_selector", {})
+    identity = selector.get("selector_identity", {})
+    if identity != {
+        "artifact_label": "PG_SELECTOR_SNAPSHOT_V2",
+        "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
+    }:
+        errors.append("selector_snapshot_identity")
+    relevant_ids = selector.get("relevant_candidate_provenance_ids", [])
+    outside_ids = selector.get("unrelated_candidate_provenance_ids", [])
+    if (
+        not isinstance(relevant_ids, list) or not isinstance(outside_ids, list)
+        or len(relevant_ids) > 64 or len(outside_ids) > 16
+        or len(relevant_ids) != len(set(relevant_ids))
+        or len(outside_ids) != len(set(outside_ids))
+        or set(relevant_ids) & set(outside_ids)
+        or any(identifier not in sources for identifier in relevant_ids + outside_ids)
+    ):
+        errors.append("selector_membership")
+    for field in ("relevant_candidate_provenance_ids", "unrelated_candidate_provenance_ids"):
+        identifiers = selector.get(field, [])
+        if not isinstance(identifiers, list) or identifiers != sorted(
+            identifiers,
+            key=lambda identifier: (
+                sources[identifier].ordinal if identifier in sources else -1, identifier,
+            ),
+        ):
+            errors.append("selector_presentation_order")
     synthetic = selector.get("synthetic_unsupported_target")
     if not selector.get("synthetic_exact_absent") or not isinstance(synthetic, str) or any(
         synthetic.casefold() in " ".join(source.text.casefold().split()) for source in checkpoint.sources
@@ -963,8 +1000,10 @@ def validate_root(
     if require_complete and missing:
         errors.append({"error": "missing_queries", "count": len(missing), "sample": missing[:20]})
     report = {
-        "preprocessing_contract": PG_PREPROCESS_V1,
+        "preprocessing_contract": PG_PREPROCESS_V2,
         "contract_digest": CONTRACT_DIGEST,
+        "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
+        "executable_contract_sha256": pg_preprocess_v2_manifest().executable_contract_sha256,
         "semantic_validation_status": SEMANTIC_VALIDATION_STATUS,
         "expected_queries": len(expected), "terminal_queries": len(seen),
         "missing_queries": len(missing), "extra_or_invalid": len(errors),
@@ -1019,8 +1058,10 @@ def merge_root(
         "mechanical-validation-report.json": sha256(validation_path.read_bytes()).hexdigest(),
     }
     manifest = {
-        "preprocessing_contract": PG_PREPROCESS_V1,
+        "preprocessing_contract": PG_PREPROCESS_V2,
         "contract_digest": CONTRACT_DIGEST,
+        "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
+        "executable_contract_sha256": pg_preprocess_v2_manifest().executable_contract_sha256,
         "semantic_validation_status": SEMANTIC_VALIDATION_STATUS,
         "dataset_artifacts": plan["dataset_artifacts"],
         "query_counts": dict(Counter(item["benchmark"] for item in plan["queries"])),
@@ -1064,8 +1105,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_parser = sub.add_parser(mode, parents=[common])
         run_parser.add_argument("--shard", type=int, required=True)
         run_parser.add_argument("--model-path", type=Path, default=DEFAULT_MODEL_PATH)
-        run_parser.add_argument("--ollama-url", default="http://127.0.0.1:11500/api/embed")
-        run_parser.add_argument("--ollama-manifest", type=Path, default=DEFAULT_OLLAMA_MANIFEST)
+        run_parser.add_argument(
+            "--selector-snapshot", type=Path,
+            default=DEFAULT_SELECTOR_ROOT / "selector-snapshot.jsonl",
+        )
         run_parser.add_argument("--stop-after", type=int)
     sub.add_parser("merge", parents=[common])
     validate_parser = sub.add_parser("validate", parents=[common])
@@ -1076,7 +1119,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.mode in {"run", "resume"}:
         result = run_shard(
             args.root, args.shard,
-            NomicSelector(args.ollama_url, args.ollama_manifest),
+            FrozenSelectorSnapshot.load(
+                args.selector_snapshot,
+                pg_preprocess_v2_manifest().selector_snapshot_sha256,
+            ),
             LocalQwenGenerator(args.model_path),
             resume=args.mode == "resume", locomo=args.locomo,
             longmemeval=args.longmemeval, stop_after=args.stop_after,

@@ -14,10 +14,12 @@ from ufuzz.pg_prompts import PG_PREPROCESS_V1_PROMPTS
 from ufuzz.semantic_sidecar import canonical_bytes, canonical_sha256
 
 PG_PREPROCESS_V1 = "PG_PREPROCESS_V1"
+PG_PREPROCESS_V2 = "PG_PREPROCESS_V2"
 SEMANTIC_SCHEMA_VERSION = "semantic-sidecar-v1"
 NORMALIZATION_VERSION = "pg-normalization-v1"
 VALIDATION_VERSION = "pg-validation-v1"
 INFORMATION_FLOW_VERSION = "pg-information-flow-v1"
+SELECTOR_SNAPSHOT_SHA256 = "4098f0932bcacb59deac1d8c7ab71ccdda82b67a65d437553c90261cb0443615"
 
 _EXPECTED_PROMPT_DIGESTS = {
     "query_slot": "82ea064fedddc77f3e4b88f0418f32977391ac99ec946c0494985f221e6f9e1e",
@@ -131,6 +133,41 @@ class PGPreprocessCandidateManifest:
         return sha256(self.canonical_bytes).hexdigest()
 
 
+@dataclass(frozen=True, slots=True)
+class PGPreprocessV2Manifest:
+    """Production-executable successor that leaves the V1 bytes untouched."""
+
+    contract_label: str
+    supersedes: str
+    supersession_reason: str
+    semantic_schema_version: str
+    normalization_version: str
+    validation_version: str
+    information_flow_version: str
+    benchmark_artifacts: dict[str, Any]
+    model: dict[str, Any]
+    selector: dict[str, Any]
+    selector_snapshot_sha256: str
+    prompts: dict[str, str]
+    prompt_sha256: dict[str, str]
+    generation_limits: dict[str, int]
+    g_chunking: dict[str, int]
+    rules: dict[str, Any]
+    information_flow: dict[str, Any]
+    executable_contract: dict[str, Any]
+    validation_rule_sha256: str
+    information_flow_policy_sha256: str
+    executable_contract_sha256: str
+
+    @property
+    def canonical_bytes(self) -> bytes:
+        return canonical_bytes(self)
+
+    @property
+    def sha256_digest(self) -> str:
+        return sha256(self.canonical_bytes).hexdigest()
+
+
 def prompt_digests() -> dict[str, str]:
     values = {name: sha256(text.encode("utf-8")).hexdigest() for name, text in PG_PREPROCESS_V1_PROMPTS.items()}
     if values != _EXPECTED_PROMPT_DIGESTS:
@@ -185,4 +222,87 @@ def pg_preprocess_v1_manifest() -> PGPreprocessCandidateManifest:
         },
         validation_rule_sha256=canonical_sha256(VALIDATION_RULES),
         information_flow_policy_sha256=canonical_sha256(INFORMATION_FLOW_POLICY),
+    )
+
+
+V2_STAGE_ORDER = (
+    "source_selection",
+    "canonical_candidate_presentation",
+    "query_slot_parse",
+    "bounded_relevant_and_outside_proposition_extraction",
+    "relevant_relation_entity_verification",
+    "relevant_existing_memory_state_eligibility",
+    "target_changing_relation_entity_verification",
+    "target_changing_existing_memory_state_eligibility",
+    "outside_existing_memory_state_eligibility",
+    "outside_query_relevance",
+    "final_opportunity_registration",
+    "g_native_evidence_scope_construction",
+    "g_bounded_chunk_enumeration",
+    "g_one_generation_call_per_chunk",
+    "canonical_g_merge",
+    "final_g_validation",
+)
+
+V2_EXECUTABLE_CONTRACT: dict[str, Any] = {
+    "selected_source_membership": "read only from immutable PG_SELECTOR_SNAPSHOT_V2",
+    "selected_source_presentation": "source_ordinal ascending, then provenance_id ascending",
+    "outside_membership": "first 16 by frozen event-keyed SHA-256 order outside top-64 membership",
+    "outside_presentation": "source_ordinal ascending, then provenance_id ascending",
+    "generation_call_unit": "exactly one scientific task per model.generate invocation",
+    "semantic_batching": False,
+    "parallelism": "independent query workers or shards only",
+    "within_query_stage_order": V2_STAGE_ORDER,
+    "g_merge": {
+        "e_plus_order": ("provenance_id", "char_start", "char_end", "component_id"),
+        "e_plus_deduplication": "exact canonical region only",
+        "accepted_option_order": "canonical sorted component membership, then canonical option bytes",
+        "accepted_option_deduplication": "exact canonical option only",
+    },
+    "selector_service": {
+        "purpose": "one-epoch snapshot construction only; never P/G generation",
+        "host_scope": "localhost_only",
+        "ollama_num_parallel": 1,
+        "gpu": 5,
+    },
+}
+
+
+def pg_preprocess_v2_manifest() -> PGPreprocessV2Manifest:
+    """Return V2 with V1 scientific semantics and explicit execution shape."""
+
+    v1 = pg_preprocess_v1_manifest()
+    selector = dict(v1.selector)
+    selector.update(
+        {
+            "artifact_label": "PG_SELECTOR_SNAPSHOT_V2",
+            "selector_snapshot_sha256": SELECTOR_SNAPSHOT_SHA256,
+            "membership_consumption": "immutable snapshot only; live recomputation forbidden",
+            "relevant_presentation_order": "source_ordinal ascending, then provenance_id ascending",
+            "outside_presentation_order": "source_ordinal ascending, then provenance_id ascending",
+            "ollama_num_parallel": 1,
+        }
+    )
+    return PGPreprocessV2Manifest(
+        contract_label=PG_PREPROCESS_V2,
+        supersedes=PG_PREPROCESS_V1,
+        supersession_reason="EXECUTABLE_CONTRACT_UNDERSPECIFICATION_BEFORE_HUMAN_VALIDATION",
+        semantic_schema_version=v1.semantic_schema_version,
+        normalization_version=v1.normalization_version,
+        validation_version="pg-validation-v2",
+        information_flow_version=v1.information_flow_version,
+        benchmark_artifacts=v1.benchmark_artifacts,
+        model=v1.model,
+        selector=selector,
+        selector_snapshot_sha256=SELECTOR_SNAPSHOT_SHA256,
+        prompts=v1.prompts,
+        prompt_sha256=v1.prompt_sha256,
+        generation_limits=v1.generation_limits,
+        g_chunking=v1.g_chunking,
+        rules=v1.rules,
+        information_flow=v1.information_flow,
+        executable_contract=V2_EXECUTABLE_CONTRACT,
+        validation_rule_sha256=v1.validation_rule_sha256,
+        information_flow_policy_sha256=v1.information_flow_policy_sha256,
+        executable_contract_sha256=canonical_sha256(V2_EXECUTABLE_CONTRACT),
     )

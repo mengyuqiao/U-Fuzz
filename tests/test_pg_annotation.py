@@ -18,6 +18,7 @@ from ufuzz.pg_annotation import (
     validate_annotation_information_flow,
     write_annotation_package,
 )
+from ufuzz.pg_preprocess import PG_PREPROCESS_V2
 
 
 def _record(index: int, dimension: str, section: str = "SEARCH_SAFE") -> AnnotationRecord:
@@ -59,6 +60,22 @@ class AnnotationPackageTests(unittest.TestCase):
                 (Path(directory) / "deterministic_record_manifest.json").read_text()
             )
             self.assertEqual(manifest["record_count"], 1)
+
+    def test_v2_package_binds_v2_identity_without_labels(self) -> None:
+        records = (_record(1, "query_slot_validity"),)
+        with tempfile.TemporaryDirectory() as directory:
+            write_annotation_package(
+                directory, records, "# V2 Guideline", candidate_label=PG_PREPROCESS_V2
+            )
+            root = Path(directory)
+            record_manifest_value = json.loads(
+                (root / "deterministic_record_manifest.json").read_text()
+            )
+            candidate = json.loads((root / "frozen_candidate_manifest.json").read_text())
+            self.assertEqual(record_manifest_value["candidate"], PG_PREPROCESS_V2)
+            self.assertEqual(candidate["contract_label"], PG_PREPROCESS_V2)
+            with (root / "annotator_A_labels.csv").open(newline="") as stream:
+                self.assertEqual(next(csv.DictReader(stream))["annotator_label"], "")
 
     def test_label_validation_rejects_missing_duplicate_and_changed_rows(self) -> None:
         records = (_record(1, "query_slot_validity"),)

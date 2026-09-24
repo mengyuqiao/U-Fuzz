@@ -12,6 +12,8 @@ from ufuzz.pg_generate import (
     CONTRACT_DIGEST,
     SEMANTIC_VALIDATION_STATUS,
     atomic_write,
+    canonical_source_presentation,
+    _canonicalize_g_options,
     load_plan,
     merge_root,
     process_query,
@@ -21,6 +23,7 @@ from ufuzz.pg_generate import (
     validate_root,
     write_canonical_json,
 )
+from ufuzz.pg_preprocess import PG_PREPROCESS_V2, pg_preprocess_v2_manifest
 from ufuzz.semantic_sidecar import canonical_bytes
 
 
@@ -35,7 +38,10 @@ class FakeSelector:
             "unrelated_candidate_provenance_ids": [],
             "synthetic_unsupported_target": "ufuzz-session-local-absent-fixture",
             "synthetic_exact_absent": True,
-            "selector_identity": {"test_double": True},
+            "selector_identity": {
+                "artifact_label": "PG_SELECTOR_SNAPSHOT_V2",
+                "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
+            },
         }
 
 
@@ -110,8 +116,10 @@ def _write_plan(root: Path, checkpoint, num_shards: int = 1):
     ]
     queries.sort(key=lambda row: row["query_id"])
     plan = {
-        "preprocessing_contract": "PG_PREPROCESS_V1",
+        "preprocessing_contract": PG_PREPROCESS_V2,
         "contract_digest": CONTRACT_DIGEST,
+        "executable_contract_sha256": pg_preprocess_v2_manifest().executable_contract_sha256,
+        "selector_snapshot_sha256": pg_preprocess_v2_manifest().selector_snapshot_sha256,
         "semantic_validation_status": SEMANTIC_VALIDATION_STATUS,
         "num_shards": num_shards, "dataset_artifacts": {},
         "full_dataset_query_counts": {}, "planned_query_count": len(queries),
@@ -125,6 +133,28 @@ def _write_plan(root: Path, checkpoint, num_shards: int = 1):
 
 
 class PGGenerateTests(unittest.TestCase):
+    def test_canonical_g_option_merge_ignores_generation_order(self):
+        left = [{"required_components": [
+            {"component_id": "b", "value": " two "},
+            {"component_id": "a", "value": "one"},
+        ]}]
+        right = [{"required_components": list(reversed(left[0]["required_components"]))}]
+        first, issues = _canonicalize_g_options(left)
+        second, other_issues = _canonicalize_g_options(right)
+        self.assertEqual(first, second)
+        self.assertEqual(issues, [])
+        self.assertEqual(other_issues, [])
+        self.assertEqual([item["component_id"] for item in first[0]["required_components"]], ["a", "b"])
+
+    def test_selected_membership_has_checkpoint_native_presentation(self):
+        checkpoint = _checkpoint_pair()
+        sources = list(checkpoint.sources)
+        presented = canonical_source_presentation(reversed(sources))
+        self.assertEqual(
+            [source.provenance_id for source in presented],
+            [source.provenance_id for source in sorted(sources, key=lambda source: (source.ordinal, source.provenance_id))],
+        )
+
     def test_sharding_is_stable_and_machine_independent(self):
         self.assertEqual(shard_for_query("query:one", 7), shard_for_query("query:one", 7))
         self.assertEqual(shard_for_query("query:one", 7), 2)
@@ -133,11 +163,19 @@ class PGGenerateTests(unittest.TestCase):
 
     def test_query_record_is_separated_and_mechanically_grounded(self):
         checkpoint = _checkpoint_pair()
-        record = process_query(checkpoint, checkpoint.queries[0], FakeSelector(), FakeGenerator())
+        generator = FakeGenerator()
+        record = process_query(checkpoint, checkpoint.queries[0], FakeSelector(), generator)
         self.assertEqual(record["P"]["status"], "RESOLVED")
         self.assertEqual(record["G"]["status"], "RESOLVED")
         self.assertNotIn("gold_answer", json.dumps(record["P"]))
         self.assertEqual(record["P"]["opportunities"]["update"]["value"], "Boston")
+        self.assertEqual(
+            record["executable_contract_sha256"],
+            pg_preprocess_v2_manifest().executable_contract_sha256,
+        )
+        call_ids = [call["task_id"] for call in generator.calls]
+        self.assertEqual(len(call_ids), len(set(call_ids)))
+        self.assertEqual(call_ids, [call["task_id"] for call in record["raw_calls"]])
 
     def test_atomic_resume_skips_committed_terminal_query(self):
         checkpoint = _checkpoint_pair()
@@ -195,6 +233,18 @@ class PGGenerateTests(unittest.TestCase):
             plan["contract_digest"] = "0" * 64
             write_canonical_json(path, plan)
             with self.assertRaisesRegex(RuntimeError, "contract digest"):
+                load_plan(root)
+
+    def test_selector_snapshot_digest_mismatch_fails_closed(self):
+        checkpoint = _checkpoint_pair()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            _write_plan(root, checkpoint)
+            path = root / "plan" / "query-shards.json"
+            plan = json.loads(path.read_text())
+            plan["selector_snapshot_sha256"] = "0" * 64
+            write_canonical_json(path, plan)
+            with self.assertRaisesRegex(RuntimeError, "selector-snapshot"):
                 load_plan(root)
 
     def test_dataset_hash_mismatch_is_detected(self):

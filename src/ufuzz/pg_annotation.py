@@ -1,4 +1,4 @@
-"""Human annotation package and scoring for ``PG_PREPROCESS_V1``.
+"""Human annotation package and scoring for frozen P/G candidates.
 
 The scorer is deterministic and contains no model invocation.  Candidate
 evidence is immutable; annotators fill only the label, reason, and rationale
@@ -15,7 +15,12 @@ import json
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from ufuzz.pg_preprocess import PG_PREPROCESS_V1, pg_preprocess_v1_manifest
+from ufuzz.pg_preprocess import (
+    PG_PREPROCESS_V1,
+    PG_PREPROCESS_V2,
+    pg_preprocess_v1_manifest,
+    pg_preprocess_v2_manifest,
+)
 from ufuzz.semantic_sidecar import canonical_bytes
 
 
@@ -102,9 +107,11 @@ class AnnotationRecord:
         return DIMENSIONS[self.annotation_dimension].labels
 
 
-def deterministic_record_order(records: Iterable[AnnotationRecord]) -> tuple[AnnotationRecord, ...]:
+def deterministic_record_order(
+    records: Iterable[AnnotationRecord], order_seed: str = ANNOTATION_ORDER_SEED
+) -> tuple[AnnotationRecord, ...]:
     def key(record: AnnotationRecord) -> tuple[str, str]:
-        digest = sha256((ANNOTATION_ORDER_SEED + "\0" + record.record_id).encode()).hexdigest()
+        digest = sha256((order_seed + "\0" + record.record_id).encode()).hexdigest()
         return digest, record.record_id
     values = tuple(sorted(records, key=key))
     ids = [record.record_id for record in values]
@@ -132,8 +139,11 @@ def validate_annotation_information_flow(records: Iterable[AnnotationRecord]) ->
             )
 
 
-def record_manifest(records: Sequence[AnnotationRecord]) -> dict[str, Any]:
-    ordered = deterministic_record_order(records)
+def record_manifest(
+    records: Sequence[AnnotationRecord], *, candidate_label: str = PG_PREPROCESS_V1,
+    order_seed: str = ANNOTATION_ORDER_SEED,
+) -> dict[str, Any]:
+    ordered = deterministic_record_order(records, order_seed)
     entries = [
         {
             "record_id": item.record_id,
@@ -149,8 +159,8 @@ def record_manifest(records: Sequence[AnnotationRecord]) -> dict[str, Any]:
         for item in ordered
     ]
     return {
-        "candidate": PG_PREPROCESS_V1,
-        "ordering_seed": ANNOTATION_ORDER_SEED,
+        "candidate": candidate_label,
+        "ordering_seed": order_seed,
         "record_count": len(entries),
         "records": entries,
     }
@@ -160,13 +170,21 @@ def write_annotation_package(
     directory: str | Path,
     records: Sequence[AnnotationRecord],
     guideline: str,
+    *,
+    candidate_label: str = PG_PREPROCESS_V1,
 ) -> dict[str, str]:
     destination = Path(directory)
     destination.mkdir(parents=True, exist_ok=True)
-    ordered = deterministic_record_order(records)
+    order_seed = f"{candidate_label}/HUMAN_REVIEW/1729"
+    ordered = deterministic_record_order(records, order_seed)
     validate_annotation_information_flow(ordered)
-    manifest = record_manifest(ordered)
-    candidate = pg_preprocess_v1_manifest()
+    manifest = record_manifest(ordered, candidate_label=candidate_label, order_seed=order_seed)
+    if candidate_label == PG_PREPROCESS_V1:
+        candidate = pg_preprocess_v1_manifest()
+    elif candidate_label == PG_PREPROCESS_V2:
+        candidate = pg_preprocess_v2_manifest()
+    else:
+        raise ValueError(f"unknown preprocessing candidate {candidate_label}")
     _write_json(destination / "frozen_candidate_manifest.json", json.loads(candidate.canonical_bytes))
     _write_json(destination / "deterministic_record_manifest.json", manifest)
     with (destination / "annotation_records.jsonl").open("w", encoding="utf-8") as stream:
@@ -188,7 +206,7 @@ def write_annotation_package(
         _write_csv(destination / filename, rows)
     (destination / "annotation_guideline.md").write_text(guideline.rstrip() + "\n", encoding="utf-8")
     _write_json(destination / "annotator_metadata_template.json", {
-        "candidate": PG_PREPROCESS_V1,
+        "candidate": candidate_label,
         "annotators": [
             _empty_person("annotator_A"), _empty_person("annotator_B"), _empty_person("adjudicator")
         ],
@@ -204,7 +222,7 @@ def write_annotation_package(
         "information_flow_violations": None,
         "synthetic_target_absence_violations": None,
     })
-    (destination / "README.md").write_text(_package_readme(), encoding="utf-8")
+    (destination / "README.md").write_text(_package_readme(candidate_label), encoding="utf-8")
     digests = package_digests(destination)
     (destination / "SHA256SUMS").write_text(
         "".join(f"{digest}  {name}\n" for name, digest in sorted(digests.items())), encoding="utf-8"
@@ -325,7 +343,7 @@ def score_annotations(
     disagreements = [item for item in (row["record_id"] for row in rows) if labels_a[item] != labels_b[item]]
     iaa_pass = pooled["raw_agreement"] >= 0.85 and pooled["cohens_kappa"] is not None and pooled["cohens_kappa"] >= 0.70
     report: dict[str, Any] = {
-        "candidate": PG_PREPROCESS_V1,
+        "candidate": manifest.get("candidate", PG_PREPROCESS_V1),
         "agreement_by_dimension": agreement,
         "pooled_primary_agreement": pooled,
         "iaa_gate_pass": iaa_pass,
@@ -469,8 +487,8 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def _package_readme() -> str:
-    return """# PG_PREPROCESS_V1 human review
+def _package_readme(candidate_label: str = PG_PREPROCESS_V1) -> str:
+    return f"""# {candidate_label} human review
 
 Annotators A and B must independently read `annotation_guideline.md` and
 `annotation_records.jsonl`, fill only the final three columns of their own
