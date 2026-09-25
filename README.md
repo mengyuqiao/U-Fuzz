@@ -3,6 +3,10 @@
 Code for **When Correct Memory Goes Wrong: Fuzzing Persistent Memory Use in
 LLM Agents**.
 
+<p align="center"> <img src="assets/intro.png" width="95%" alt="Two memory-use failures: a paraphrased query retrieves the wrong record, and after an update the stale record still ranks first"> </p>
+
+**Correct memory, wrong use.** (1) A paraphrase of the same question ranks the wrong record first. (2) After a memory update, the stale record still outranks the current one.
+
 ## 🔥 Highlights
  
 - **New failure class.** Memory-use failures happen when the stored memory is correct but the agent retrieves or uses it incorrectly after a paraphrase, an update, or a deletion.
