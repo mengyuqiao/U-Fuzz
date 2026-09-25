@@ -1,0 +1,75 @@
+# Private paper and working documentation
+docs/
+
+# Python bytecode, caches, and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python environments and packaging output
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+build/
+dist/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+secrets*.json
+
+# Datasets, generated artifacts, and experiment output
+data/
+datasets/
+artifacts/
+ufuzz-artifacts/
+results/
+runs/
+outputs/
+checkpoints/
+models/
+
+# Model and service caches
+.cache/
+.huggingface/
+.ollama/
+qdrant_storage/
+chroma/
+neo4j/
+
+# Local databases and runtime files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.pid
+*.log
+
+# Notebooks and editor/OS files
+.ipynb_checkpoints/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# Temporary files
+tmp/
+temp/
+*.tmp
